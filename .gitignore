@@ -1,0 +1,27 @@
+# Project-level data/output/submodule ignores for GitHub push
+input/
+inputs/
+output/
+outputs/
+submodule/
+submodules/
+
+# BEGIN Joint3DGS split ignores
+.codex
+__pycache__/
+*.py[cod]
+assets/
+input/
+inputs/
+output/
+outputs/
+*.pt
+*.pth
+*.ckpt
+*.mp4
+*.npy
+*.npz
+*.zip
+*.tar
+*.tar.gz
+# END Joint3DGS split ignores

@@ -1,0 +1,43 @@
+services:
+  renderer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: urdf-sapien-renderer:latest
+    container_name: urdf-sapien-renderer-headless
+    gpus: all
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: graphics,utility,compute,display
+      PYTHONUNBUFFERED: "1"
+      QT_X11_NO_MITSHM: "1"
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./:/workspace
+      - ${ASSETS_DIR:-./assets}:/data/assets
+      - ${OUTPUT_DIR:-./output}:/data/output
+    command: ["bash"]
+
+  renderer-gui:
+    profiles: ["gui"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: urdf-sapien-renderer:latest
+    container_name: urdf-sapien-renderer-gui
+    gpus: all
+    environment:
+      DISPLAY: ${DISPLAY:-:0}
+      NVIDIA_DRIVER_CAPABILITIES: graphics,utility,compute,display
+      PYTHONUNBUFFERED: "1"
+      QT_X11_NO_MITSHM: "1"
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+    volumes:
+      - ./:/workspace
+      - ${ASSETS_DIR:-./assets}:/data/assets
+      - ${OUTPUT_DIR:-./output}:/data/output
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: ["bash"]
