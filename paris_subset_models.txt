@@ -1,0 +1,10 @@
+blade/103706 0
+foldchair/102255 1
+fridge/10905 0
+laptop/10211 1
+oven/101917 0
+scissor/11100 0
+stapler/103111 1
+storage/45135 0
+USB/100109 0
+washer/103776 0
