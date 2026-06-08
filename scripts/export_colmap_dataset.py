@@ -31,11 +31,14 @@ from typing import Any
 
 import numpy as np
 import yaml
+
 try:
     from tqdm import tqdm
 except ModuleNotFoundError:  # pragma: no cover - fallback for minimal host envs
+
     def tqdm(iterable: Any, **_: Any) -> Any:  # type: ignore[no-redef]
         return iterable
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -47,7 +50,7 @@ for import_dir in (SCRIPT_DIR, SRC_DIR):
 
 from camera_utils import camera_pose_matrix  # noqa: E402
 from config_types import CameraSpec, RenderJobConfig  # noqa: E402
-from read_write_model import Camera, Image, Point3D, rotmat2qvec, write_model  # noqa: E402
+from read_write_model import Camera, Image, Point3D, qvec2rotmat, rotmat2qvec, write_model  # noqa: E402
 
 
 SAPIEN_CAMERA_TO_COLMAP_CAMERA = np.array(
@@ -333,8 +336,16 @@ def parse_part_link_info(urdf_path: Path, joint_name: str) -> PartLinkInfo:
         name = (elem.attrib.get("name") or "").strip()
         parent_elem = _first_child_with_tag(elem, "parent")
         child_elem = _first_child_with_tag(elem, "child")
-        parent_link = (parent_elem.attrib.get("link") or "").strip() if parent_elem is not None else None
-        child_link = (child_elem.attrib.get("link") or "").strip() if child_elem is not None else None
+        parent_link = (
+            (parent_elem.attrib.get("link") or "").strip()
+            if parent_elem is not None
+            else None
+        )
+        child_link = (
+            (child_elem.attrib.get("link") or "").strip()
+            if child_elem is not None
+            else None
+        )
         if name:
             joint_parent_child[name] = (parent_link or None, child_link or None)
         if parent_link and child_link:
@@ -417,10 +428,12 @@ def _root_pose_matrix(cfg: RenderJobConfig) -> tuple[np.ndarray, np.ndarray]:
         raise ValueError("root_pose quaternion norm must be > 0")
     quat = quat / quat_norm
     translation = np.asarray(cfg.root_pose.position, dtype=np.float64)
-    return qvec_to_rotmat(quat), translation
+    return qvec2rotmat(quat), translation
 
 
-def parse_joint_metadata(urdf_path: Path, joint_name: str, cfg: RenderJobConfig) -> JointMetadata:
+def parse_joint_metadata(
+    urdf_path: Path, joint_name: str, cfg: RenderJobConfig
+) -> JointMetadata:
     root = ET.parse(urdf_path).getroot()
 
     joint_elem: ET.Element | None = None
@@ -442,9 +455,17 @@ def parse_joint_metadata(urdf_path: Path, joint_name: str, cfg: RenderJobConfig)
 
     origin_elem = _first_child_with_tag(joint_elem, "origin")
     axis_elem = _first_child_with_tag(joint_elem, "axis")
-    origin_xyz = _parse_vector(origin_elem.attrib.get("xyz") if origin_elem is not None else None, [0.0, 0.0, 0.0])
-    origin_rpy = _parse_vector(origin_elem.attrib.get("rpy") if origin_elem is not None else None, [0.0, 0.0, 0.0])
-    axis = _parse_vector(axis_elem.attrib.get("xyz") if axis_elem is not None else None, [1.0, 0.0, 0.0])
+    origin_xyz = _parse_vector(
+        origin_elem.attrib.get("xyz") if origin_elem is not None else None,
+        [0.0, 0.0, 0.0],
+    )
+    origin_rpy = _parse_vector(
+        origin_elem.attrib.get("rpy") if origin_elem is not None else None,
+        [0.0, 0.0, 0.0],
+    )
+    axis = _parse_vector(
+        axis_elem.attrib.get("xyz") if axis_elem is not None else None, [1.0, 0.0, 0.0]
+    )
 
     root_rot, root_translation = _root_pose_matrix(cfg)
     joint_rot = _rpy_to_rotmat(origin_rpy)
@@ -527,7 +548,9 @@ def _camera_intrinsics(camera: CameraSpec) -> tuple[float, float, float, float]:
     if camera.fov_y_deg is None:
         raise ValueError(f"Camera '{camera.name}' has no intrinsics or fov_y_deg")
 
-    fy = float(camera.height) / (2.0 * math.tan(math.radians(float(camera.fov_y_deg)) / 2.0))
+    fy = float(camera.height) / (
+        2.0 * math.tan(math.radians(float(camera.fov_y_deg)) / 2.0)
+    )
     fx = fy
     cx = float(camera.width) / 2.0
     cy = float(camera.height) / 2.0
@@ -553,7 +576,9 @@ def _colmap_world_to_camera(camera: CameraSpec) -> tuple[np.ndarray, np.ndarray]
     rotation_camera_to_world_sapien = camera_to_world_sapien[:3, :3]
     camera_center_world = camera_to_world_sapien[:3, 3]
 
-    rotation_world_to_camera = SAPIEN_CAMERA_TO_COLMAP_CAMERA @ rotation_camera_to_world_sapien.T
+    rotation_world_to_camera = (
+        SAPIEN_CAMERA_TO_COLMAP_CAMERA @ rotation_camera_to_world_sapien.T
+    )
     translation = -rotation_world_to_camera @ camera_center_world
     qvec = rotmat2qvec(rotation_world_to_camera)
     return qvec, translation
@@ -657,7 +682,9 @@ def _write_part_ply(
 ) -> None:
     ply_path.parent.mkdir(parents=True, exist_ok=True)
     point_ids = sorted(points3D.keys())
-    joint_metadata_json = json.dumps(joint_metadata, sort_keys=True, separators=(",", ":"))
+    joint_metadata_json = json.dumps(
+        joint_metadata, sort_keys=True, separators=(",", ":")
+    )
 
     with ply_path.open("w", encoding="utf-8") as f:
         f.write("ply\n")
@@ -707,7 +734,9 @@ def export_model(
 
     model_output = model_output.expanduser().resolve()
     if not model_output.exists():
-        raise FileNotFoundError(f"Model output directory does not exist: {model_output}")
+        raise FileNotFoundError(
+            f"Model output directory does not exist: {model_output}"
+        )
 
     cfg = _load_render_config(model_output, urdf_path=urdf_path)
     resolved_urdf = cfg.resolved_urdf_path()
@@ -742,7 +771,9 @@ def export_model(
 
     colmap_cameras = _build_colmap_cameras(cfg.cameras)
     num_frames = cfg.resolved_num_frames()
-    q_values = np.linspace(float(cfg.q_start), float(cfg.q_end), num_frames, dtype=np.float64)
+    q_values = np.linspace(
+        float(cfg.q_start), float(cfg.q_end), num_frames, dtype=np.float64
+    )
     frame_indices = list(range(0, num_frames, int(args.frame_step)))
     if args.max_frames is not None and int(args.max_frames) > 0:
         frame_indices = frame_indices[: int(args.max_frames)]
@@ -754,14 +785,18 @@ def export_model(
     next_image_id = 1
     next_point_id = 1
 
-    camera_id_by_name = {camera.name: idx for idx, camera in enumerate(cfg.cameras, start=1)}
+    camera_id_by_name = {
+        camera.name: idx for idx, camera in enumerate(cfg.cameras, start=1)
+    }
     camera_extrinsics: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for camera in cfg.cameras:
         qvec, tvec = _colmap_world_to_camera(camera)
-        rotation_world_to_camera = qvec_to_rotmat(qvec)
+        rotation_world_to_camera = qvec2rotmat(qvec)
         camera_extrinsics[camera.name] = (qvec, tvec, rotation_world_to_camera)
 
-    for frame_idx in tqdm(frame_indices, desc=f"COLMAP export {model_output.name}", unit="frame"):
+    for frame_idx in tqdm(
+        frame_indices, desc=f"COLMAP export {model_output.name}", unit="frame"
+    ):
         renderer.set_joint_value(cfg.joint_name, float(q_values[frame_idx]))
 
         for camera in cfg.cameras:
@@ -807,7 +842,9 @@ def export_model(
                 colors = rgb[ys, xs, :3].astype(np.uint8)
                 parts = part_labels[ys, xs].astype(np.uint8)
 
-                for point_idx, (xyz, color, part) in enumerate(zip(world_points, colors, parts)):
+                for point_idx, (xyz, color, part) in enumerate(
+                    zip(world_points, colors, parts)
+                ):
                     point_id = next_point_id
                     next_point_id += 1
                     point3D_ids[point_idx] = point_id
@@ -856,7 +893,9 @@ def export_model(
         ply_path=ply_path,
     )
     joint_metadata_path = ply_path.parent / "joint_metadata.json"
-    joint_metadata_path.write_text(json.dumps(joint_metadata, indent=2), encoding="utf-8")
+    joint_metadata_path.write_text(
+        json.dumps(joint_metadata, indent=2), encoding="utf-8"
+    )
 
     stats = ExportStats(
         model_output=str(model_output),
@@ -877,44 +916,26 @@ def export_model(
         max_frames=args.max_frames,
         joint_metadata=joint_metadata,
         part_link_info=asdict(part_info),
-        actor_id_to_link_name={str(k): v for k, v in sorted(actor_id_to_link_name.items())},
+        actor_id_to_link_name={
+            str(k): v for k, v in sorted(actor_id_to_link_name.items())
+        },
         actor_id_to_part={str(k): v for k, v in sorted(actor_id_to_part.items())},
     )
 
     metadata_payload = asdict(stats)
     metadata_payload_path = model_output / "metadata" / "colmap_export.json"
     metadata_payload_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_payload_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    metadata_payload_path.write_text(
+        json.dumps(metadata_payload, indent=2), encoding="utf-8"
+    )
 
     export_summary_path = colmap_dir / "export_summary.json"
     export_summary_path.parent.mkdir(parents=True, exist_ok=True)
-    export_summary_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    export_summary_path.write_text(
+        json.dumps(metadata_payload, indent=2), encoding="utf-8"
+    )
 
     return stats
-
-
-def qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
-    q = np.asarray(qvec, dtype=np.float64)
-    return np.array(
-        [
-            [
-                1 - 2 * q[2] ** 2 - 2 * q[3] ** 2,
-                2 * q[1] * q[2] - 2 * q[0] * q[3],
-                2 * q[3] * q[1] + 2 * q[0] * q[2],
-            ],
-            [
-                2 * q[1] * q[2] + 2 * q[0] * q[3],
-                1 - 2 * q[1] ** 2 - 2 * q[3] ** 2,
-                2 * q[2] * q[3] - 2 * q[0] * q[1],
-            ],
-            [
-                2 * q[3] * q[1] - 2 * q[0] * q[2],
-                2 * q[2] * q[3] + 2 * q[0] * q[1],
-                1 - 2 * q[1] ** 2 - 2 * q[2] ** 2,
-            ],
-        ],
-        dtype=np.float64,
-    )
 
 
 def main() -> int:
@@ -940,7 +961,9 @@ def main() -> int:
     for model_output in model_outputs:
         try:
             urdf_path = _resolve_urdf_for_model(model_output, args, urdf_map)
-            stats = export_model(model_output=model_output, urdf_path=urdf_path, args=args)
+            stats = export_model(
+                model_output=model_output, urdf_path=urdf_path, args=args
+            )
             payload = asdict(stats)
             payload["status"] = "ok"
             results.append(payload)
@@ -961,8 +984,12 @@ def main() -> int:
             print(f"[FAILED] {model_output.name}: {exc}")
 
     if args.output_root:
-        summary_path = Path(args.output_root).expanduser().resolve() / "colmap_export_summary.json"
-        summary_path.write_text(json.dumps({"results": results}, indent=2), encoding="utf-8")
+        summary_path = (
+            Path(args.output_root).expanduser().resolve() / "colmap_export_summary.json"
+        )
+        summary_path.write_text(
+            json.dumps({"results": results}, indent=2), encoding="utf-8"
+        )
         print(f"Batch export summary written to: {summary_path}")
 
     return 0 if failed == 0 else 1

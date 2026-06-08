@@ -162,7 +162,7 @@ Expected files after the test:
 ```text
 scripts/run.py                    full batch renderer and optional COLMAP/PLY export
 scripts/export_colmap_dataset.py  COLMAP/PLY exporter from rendered outputs
-scripts/read_write_model.py       COLMAP cameras/images/points3D reader/writer
+scripts/read_write_model.py       COLMAP cameras/images/points3D writer
 src/render_urdf_multiview.py      direct renderer CLI
 src/sapien_urdf_renderer.py       SAPIEN rendering, depth, masks, segmentation
 ```
