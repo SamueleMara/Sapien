@@ -21,7 +21,7 @@ import argparse
 import colorsys
 import hashlib
 import json
-import math
+import matht
 import shlex
 import subprocess
 import sys
