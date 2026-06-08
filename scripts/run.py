@@ -10,7 +10,8 @@ Pipeline steps:
    - list joints,
    - pick the first 1-DoF joint,
    - choose q_start/q_end from limits when available,
-   - run the render pipeline into a per-URDF output folder.
+   - run the render pipeline into a per-URDF output folder,
+   - optionally export COLMAP cameras/images/points3D and part-labeled PLY.
 4. Save a summary JSON with success/failure per URDF.
 """
 
@@ -178,6 +179,60 @@ def parse_args() -> argparse.Namespace:
         "--force-color-seed",
         default="0",
         help="Seed string used to generate deterministic link colors with --force-link-colors.",
+    )
+    parser.add_argument(
+        "--export-colmap",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "After each successful render, export a COLMAP sparse model and a PLY "
+            "point cloud with a 'part' field (0=static link, 1=moving link). "
+            "Use --no-export-colmap to skip."
+        ),
+    )
+    parser.add_argument(
+        "--colmap-output-name",
+        default="colmap",
+        help="COLMAP dataset subdirectory name inside each model output.",
+    )
+    parser.add_argument(
+        "--colmap-sample-stride",
+        type=int,
+        default=8,
+        help="Pixel stride used when sampling depth maps for COLMAP points.",
+    )
+    parser.add_argument(
+        "--colmap-max-points-per-image",
+        type=int,
+        default=1000,
+        help="Maximum sampled COLMAP/PLY points per image. Use 0 for no cap.",
+    )
+    parser.add_argument(
+        "--colmap-frame-step",
+        type=int,
+        default=1,
+        help="Export every Nth frame to COLMAP.",
+    )
+    parser.add_argument(
+        "--colmap-max-frames",
+        type=int,
+        default=1,
+        help=(
+            "Maximum exported frames per model after frame-step sampling. "
+            "Default: 1, so COLMAP and PLY use only frame_000000. Use 0 for all frames."
+        ),
+    )
+    parser.add_argument(
+        "--colmap-image-mode",
+        choices=["symlink", "copy", "none"],
+        default="symlink",
+        help="How to populate colmap/images from rendered RGB frames.",
+    )
+    parser.add_argument(
+        "--colmap-model-format",
+        choices=["txt", "bin", "both"],
+        default="both",
+        help="COLMAP sparse model format to write.",
     )
 
     return parser.parse_args()
@@ -604,6 +659,15 @@ def prepare_runtime_urdf(
 def main() -> int:
     args = parse_args()
 
+    if args.colmap_sample_stride < 1:
+        raise ValueError("--colmap-sample-stride must be >= 1")
+    if args.colmap_max_points_per_image < 0:
+        raise ValueError("--colmap-max-points-per-image must be >= 0")
+    if args.colmap_frame_step < 1:
+        raise ValueError("--colmap-frame-step must be >= 1")
+    if args.colmap_max_frames is not None and args.colmap_max_frames < 0:
+        raise ValueError("--colmap-max-frames must be >= 0 when provided")
+
     if args.urdf_dir and args.assets_dir:
         p1 = Path(args.urdf_dir).expanduser().resolve()
         p2 = Path(args.assets_dir).expanduser().resolve()
@@ -631,6 +695,7 @@ def main() -> int:
 
     renderer_cli = repo_root / "src" / "render_urdf_multiview.py"
     camera_gen = repo_root / "scripts" / "generate_cameras_json.py"
+    colmap_exporter = repo_root / "scripts" / "export_colmap_dataset.py"
 
     print(f"Resolved repo_root: {repo_root}")
     print(f"Resolved urdf_dir: {urdf_dir}")
@@ -638,6 +703,12 @@ def main() -> int:
     print(f"Resolved views_json: {views_json}")
     if args.force_link_colors:
         print(f"Force-link-colors enabled (seed={args.force_color_seed!r})")
+    if args.export_colmap:
+        print(
+            "COLMAP/part-PLY export enabled "
+            f"(sample_stride={args.colmap_sample_stride}, "
+            f"max_points_per_image={args.colmap_max_points_per_image})"
+        )
     if args.object_view_profile != "none":
         print(f"Object-view profile enabled: {args.object_view_profile}")
     if args.non_blade_orbit_axis != "keep":
@@ -649,6 +720,8 @@ def main() -> int:
         raise FileNotFoundError(f"Renderer CLI not found: {renderer_cli}")
     if not camera_gen.exists():
         raise FileNotFoundError(f"Camera generator not found: {camera_gen}")
+    if args.export_colmap and not colmap_exporter.exists():
+        raise FileNotFoundError(f"COLMAP exporter not found: {colmap_exporter}")
 
     # Decide camera config path and whether generation is needed.
     should_generate_camera = False
@@ -735,6 +808,13 @@ def main() -> int:
         "camera_config_stats": camera_cfg_info,
         "object_view_profile": args.object_view_profile,
         "non_blade_orbit_axis": args.non_blade_orbit_axis,
+        "export_colmap": bool(args.export_colmap),
+        "colmap_sample_stride": args.colmap_sample_stride,
+        "colmap_max_points_per_image": args.colmap_max_points_per_image,
+        "colmap_frame_step": args.colmap_frame_step,
+        "colmap_max_frames": args.colmap_max_frames,
+        "colmap_image_mode": args.colmap_image_mode,
+        "colmap_model_format": args.colmap_model_format,
         "output_root": str(output_root),
         "num_urdfs": len(urdf_files),
         "results": [],
@@ -851,6 +931,34 @@ def main() -> int:
                         render_cmd.append("--save-video")
 
                     run_command(render_cmd, dry_run=False)
+                    if args.export_colmap:
+                        export_cmd = [
+                            sys.executable,
+                            str(colmap_exporter),
+                            "--model-output",
+                            str(model_output),
+                            "--urdf",
+                            str(runtime_urdf),
+                            "--output-name",
+                            str(args.colmap_output_name),
+                            "--sample-stride",
+                            str(args.colmap_sample_stride),
+                            "--max-points-per-image",
+                            str(args.colmap_max_points_per_image),
+                            "--frame-step",
+                            str(args.colmap_frame_step),
+                            "--image-mode",
+                            str(args.colmap_image_mode),
+                            "--model-format",
+                            str(args.colmap_model_format),
+                        ]
+                        if args.colmap_max_frames is not None:
+                            export_cmd.extend(["--max-frames", str(args.colmap_max_frames)])
+                        run_command(export_cmd, dry_run=False)
+                        item["colmap_dir"] = str(model_output / args.colmap_output_name)
+                        item["part_pointcloud_ply"] = str(
+                            model_output / "pointcloud" / "points3D_parts.ply"
+                        )
                     item["status"] = "ok"
                     print(f"[OK] {urdf.name} -> {model_output}")
 

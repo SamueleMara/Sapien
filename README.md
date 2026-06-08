@@ -1,365 +1,168 @@
-# SAPIEN URDF Multi-View Renderer (Docker-Only Python Environment)
+# SAPIEN Output Generation
 
-This project renders articulated URDFs with **SAPIEN 2.2.2** and exports per-frame:
-- RGB PNG
-- metric depth (`.npy`, meters)
-- binary foreground mask PNG
-- optional per-camera RGB MP4
+This repo uses SAPIEN inside Docker to generate the two output trees used here:
 
-Everything Python-related is installed **inside Docker only**. You do not need to install project Python dependencies on the host or in conda.
-
-## Host assumptions
-
-- Host OS: Ubuntu 24.04
-- Host CUDA stack: NVIDIA driver supporting CUDA 12.8
-- Docker + NVIDIA Container Toolkit installed
-
-Container base image is `nvidia/cuda:12.8.1-runtime-ubuntu22.04`.
-Running Ubuntu 22.04 inside Docker is fine on an Ubuntu 24.04 host.
-
-## 1) Install Docker + NVIDIA runtime on Ubuntu 24
-
-If Docker is not installed yet:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y docker.io docker-compose-v2
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER
+```text
+/home/samuelemara/Joint3DGS/Sapien/output/preparation_definitive_urdf
+/home/samuelemara/Joint3DGS/Sapien/output/preparation_definitive_urdf_colmap
 ```
 
-Install NVIDIA Container Toolkit:
-
-```bash
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
-sudo apt-get update
-sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-```
-
-Log out/in after adding your user to `docker` group.
-
-Quick host checks:
-
-```bash
-nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu22.04 nvidia-smi
-```
-
-## 2) Build the image
-
-From this repo root:
-
-```bash
-docker build -t urdf-sapien-renderer:latest .
-```
-
-This installs all Python dependencies inside the image from `requirements.txt`.
-
-## 3) Run container (headless/offscreen)
-
-Quick launcher:
+Run the commands from inside the project container, where the repo is mounted at `/workspace`.
 
 ```bash
 ./scripts/docker_enter_headless.sh
 ```
 
-It auto-builds `urdf-sapien-renderer:latest` if missing.
-You can override mounts with env vars:
-
-```bash
-ASSETS_DIR=/abs/assets OUTPUT_DIR=/abs/output ./scripts/docker_enter_headless.sh
-```
-
-Manual command:
-
-```bash
-docker run --rm -it \
-  --gpus all \
-  -e NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display \
-  -v /absolute/path/to/this/repo:/workspace \
-  -v /absolute/path/to/assets:/data/assets \
-  -v /absolute/path/to/output:/data/output \
-  urdf-sapien-renderer:latest \
-  bash
-```
-
-Inside container, validate SAPIEN:
+Inside Docker, verify the renderer environment:
 
 ```bash
 python -c "import sapien; print(sapien.__version__)"
-python -m sapien.example.offscreen
 ```
 
-If `output.png` is created, offscreen rendering is working.
+## Base Output
 
-## 4) Run container with GUI (X11)
-
-Only needed if you want GUI windows (viewer/debug), not required for dataset rendering.
-
-Quick launcher:
+Create `/workspace/output/preparation_definitive_urdf` with RGB, depth, mask, metadata, and optional videos, but without COLMAP/PLY post-export:
 
 ```bash
-./scripts/docker_enter_gui.sh
-```
-
-It configures `xhost` access for local docker root and revokes it on exit.
-
-Manual command:
-
-On host, allow local docker root to access X server:
-
-```bash
-xhost +si:localuser:root
-```
-
-Run GUI-enabled container:
-
-```bash
-docker run --rm -it \
-  --gpus all \
-  -e DISPLAY=$DISPLAY \
-  -e QT_X11_NO_MITSHM=1 \
-  -e NVIDIA_DRIVER_CAPABILITIES=graphics,utility,compute,display \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  -v /absolute/path/to/this/repo:/workspace \
-  -v /absolute/path/to/assets:/data/assets \
-  -v /absolute/path/to/output:/data/output \
-  urdf-sapien-renderer:latest \
-  bash
-```
-
-After you finish, you can revoke X access:
-
-```bash
-xhost -si:localuser:root
-```
-
-## 5) Docker Compose usage
-
-Headless shell:
-
-```bash
-ASSETS_DIR=/absolute/path/to/assets OUTPUT_DIR=/absolute/path/to/output \
-  docker compose run --rm renderer
-```
-
-GUI shell:
-
-```bash
-xhost +si:localuser:root
-ASSETS_DIR=/absolute/path/to/assets OUTPUT_DIR=/absolute/path/to/output \
-  docker compose --profile gui run --rm renderer-gui
-```
-
-## 6) Use the renderer CLI inside Docker
-
-Recommended end-to-end pipeline (4 Python commands):
-
-```bash
-# 1) Verify SAPIEN inside Docker
-python -c "import sapien; print(sapien.__version__)"
-
-# 2) Generate camera views JSON
-python scripts/generate_cameras_json.py \
-  --output configs/cameras.circle.json \
-  --num-cams 8 \
-  --radius 1.4 \
-  --height 0.7 \
-  --target 0 0 0.3 \
-  --width 640 \
-  --height-px 480 \
-  --near 0.01 \
-  --far 10.0 \
-  --fov-y-deg 45
-
-# 3) Inspect available joints in your URDF
-python src/render_urdf_multiview.py list-joints \
-  --urdf /data/assets/model.urdf
-
-# 4) Run the rendering pipeline
-python src/render_urdf_multiview.py render \
-  --urdf /data/assets/model.urdf \
-  --joint-name hinge_joint \
-  --q-start 0.0 \
-  --q-end 1.0 \
+python /workspace/scripts/run.py \
+  --urdf-dir /workspace/assets/definitive_urdf/definitive_urdf \
+  --output-root /workspace/output/preparation_definitive_urdf \
+  --camera-config-json /workspace/configs/cameras.PARIS.json \
   --num-frames 60 \
-  --views-json configs/cameras.circle.json \
-  --output-dir /data/output/circle_demo \
-  --save-video
+  --save-video \
+  --no-export-colmap
 ```
 
-### List joints
-
-```bash
-python src/render_urdf_multiview.py list-joints \
-  --urdf /data/assets/model.urdf
-```
-
-### Render from direct args
-
-```bash
-python src/render_urdf_multiview.py render \
-  --urdf /data/assets/model.urdf \
-  --joint-name hinge_joint \
-  --q-start 0.0 \
-  --q-end 1.57 \
-  --num-frames 120 \
-  --views-json configs/camera_views.example.json \
-  --output-dir /data/output/demo \
-  --save-video
-```
-
-### Render from YAML config
-
-```bash
-python src/render_urdf_multiview.py render-config \
-  --config configs/job.example.yaml
-```
-
-## 7) Camera JSON generator integration
-
-You provided `scripts/generate_cameras_json.py`; it is now integrated with the renderer camera schema.
-
-Generate circular camera views:
-
-```bash
-python scripts/generate_cameras_json.py \
-  --output configs/cameras.circle.json \
-  --num-cams 8 \
-  --radius 1.4 \
-  --height 0.7 \
-  --target 0 0 0.3 \
-  --width 640 \
-  --height-px 480 \
-  --near 0.01 \
-  --far 10.0 \
-  --fov-y-deg 45
-```
-
-Then render with it:
-
-```bash
-python src/render_urdf_multiview.py render \
-  --urdf /data/assets/model.urdf \
-  --joint-name hinge_joint \
-  --q-start 0.0 \
-  --q-end 1.0 \
-  --num-frames 60 \
-  --views-json configs/cameras.circle.json \
-  --output-dir /data/output/circle_demo
-```
-
-The loader now supports both:
-- native camera entries (`width/height/near/far/...`)
-- generator-style nested fields (`intrinsics`, `pose`, optional `extrinsics`)
-
-## 8) Output layout
+Each model output has this structure:
 
 ```text
-output_dir/
-  metadata/
-    job_config_resolved.yaml
-    joint_info.json
-    cameras.json
-    frame_values.csv
-    package_versions.json
+<model_name>/
   rgb/<camera_name>/frame_000000.png
   depth_npy/<camera_name>/frame_000000.npy
   depth_png/<camera_name>/frame_000000.png
   mask/<camera_name>/frame_000000.png
   video_rgb/<camera_name>.mp4
+  metadata/
+    cameras.json
+    frame_values.csv
+    job_config_resolved.yaml
+    joint_info.json
+    package_versions.json
+    visual_materials.json
 ```
 
-Depth policy:
-- `.npy` stores metric depth in meters
-- invalid/background depth is saved as `0.0`
+## COLMAP Output
 
-Mask policy:
-- foreground `255`, background `0`
-- articulation mask uses segmentation IDs of articulation links
-
-## 9) Troubleshooting
-
-### `Cannot find a suitable rendering device`
-- Confirm `--gpus all` is used.
-- Confirm NVIDIA Container Toolkit is installed.
-- Confirm Docker runtime is configured (`nvidia-ctk runtime configure --runtime=docker`).
-- Confirm container includes required libs (`libegl1`, `libxext6`, `libvulkan1`).
-
-### `python -m sapien.example.offscreen` fails
-- Run `python -c "import sapien; print(sapien.__version__)"` first.
-- Check host driver with `nvidia-smi`.
-- Re-test with: `docker run --rm --gpus all ...`.
-
-### GUI does not open
-- Ensure X11 socket mount is present: `-v /tmp/.X11-unix:/tmp/.X11-unix`.
-- Ensure `DISPLAY` is passed.
-- Ensure `xhost +si:localuser:root` was run on host.
-- Wayland users may need XWayland enabled.
-
-## 10) Full preparation pipeline over all URDFs
-
-Inside the container (`/workspace`), run:
+Create `/workspace/output/preparation_definitive_urdf_colmap` with the same rendered structure plus a COLMAP dataset and a part-labeled PLY point cloud:
 
 ```bash
-python3 /workspace/scripts/run.py
+python /workspace/scripts/run.py \
+  --urdf-dir /workspace/assets/definitive_urdf/definitive_urdf \
+  --output-root /workspace/output/preparation_definitive_urdf_colmap \
+  --camera-config-json /workspace/configs/cameras.PARIS.json \
+  --num-frames 60 \
+  --save-video \
+  --export-colmap \
+  --colmap-max-frames 1
 ```
 
-The runner auto-fixes stale mesh paths, including absolute paths (for example `/home/.../assets/meshes/...`) and broken relative paths (for example `../meshes/...`), by remapping them to the active runtime URDF directory (for example `/workspace/assets/.../meshes/...`).
+`--colmap-max-frames 1` means the COLMAP model and PLY are generated only from `frame_000000`. Use `--colmap-max-frames 0` to export all frames.
 
-This script now auto-detects paths in Docker with this priority:
-1. `/workspace/assets`
-2. `<repo>/assets`
-3. `/data/assets`
-
-So if your repo is mounted at `/workspace`, no extra flags are needed.
-
-Useful options:
-You can set the URDF source folder with --urdf-dir (for example when URDFs are not in /workspace/assets).
-
-
-```bash
-# dry run (prints all commands)
-python3 /workspace/scripts/run.py --dry-run
-
-# save videos for each URDF job
-python3 /workspace/scripts/run.py --save-video
-
-# force deterministic per-link colors when URDF visuals have no material color/texture
-python3 /workspace/scripts/run.py \
-  --urdf-dir /workspace/assets/sapien_unified/sapien_unified \
-  --force-link-colors \
-  --force-color-seed paris_v1
-
-# explicit paths (if your mounts differ)
-python3 /workspace/scripts/run.py \
-  --urdf-dir /workspace/assets \
-  --output-root /workspace/output/preparation_all \
-  --views-json /workspace/configs/cameras.pipeline.json
-
-# use an existing camera config JSON directly (no regeneration if file exists)
-python3 /workspace/scripts/run.py \
-  --urdf-dir /workspace/assets \
-  --camera-config-json /workspace/configs/my_cameras.json
-```
-
-Camera config behavior:
-- `--camera-config-json` is treated as input and used directly for rendering.
-- `--views-json` is the generation output path used when `--camera-config-json` is not provided.
-- Without `--skip-camera-generation`, `run.py` regenerates `--views-json` each run.
-- `--force-link-colors` injects colors into visuals that lack effective material styling.
-- `--force-color-seed` controls deterministic color assignment across runs.
-
-Output summary is written to:
+Additional output per model:
 
 ```text
-/workspace/output/preparation_all/pipeline_summary.json
+<model_name>/
+  colmap/
+    images/<camera_name>/frame_000000.png
+    sparse/0/cameras.txt
+    sparse/0/images.txt
+    sparse/0/points3D.txt
+    sparse/0/cameras.bin
+    sparse/0/images.bin
+    sparse/0/points3D.bin
+    export_summary.json
+  pointcloud/
+    points3D_parts.ply
+    joint_metadata.json
+  metadata/
+    colmap_export.json
+```
+
+The PLY includes a `part` vertex field:
+
+```text
+part=0  static rendered part, selected joint parent / first URDF link, usually base_link
+part=1  moving rendered part, selected joint child / second URDF link, usually moving_link
+```
+
+The labels come from rendered SAPIEN actor segmentation, not from color heuristics.
+
+The point cloud also carries a global `joint_metadata` payload. In `points3D_parts.ply` it is encoded as a PLY header comment:
+
+```text
+comment joint_metadata {"type":"...","point_of_application":[...],"axis_vector":[...]}
+```
+
+The same payload is written to `pointcloud/joint_metadata.json` and embedded in `metadata/colmap_export.json`. It contains:
+
+```text
+type                  URDF joint type, for example revolute, prismatic, continuous
+point_of_application  joint origin transformed into the rendered world frame
+axis_vector           normalized joint axis transformed into the rendered world frame
+```
+
+The original URDF `origin xyz`, `origin rpy`, and `axis xyz` are kept in the metadata as `urdf_origin_xyz`, `urdf_origin_rpy`, and `urdf_axis`.
+
+## Add COLMAP To Existing Base Output
+
+If `/workspace/output/preparation_definitive_urdf` already exists and you only want to create the COLMAP version, copy the base tree and run the standalone exporter:
+
+```bash
+rsync -a --delete \
+  /workspace/output/preparation_definitive_urdf/ \
+  /workspace/output/preparation_definitive_urdf_colmap/
+
+python /workspace/scripts/export_colmap_dataset.py \
+  --output-root /workspace/output/preparation_definitive_urdf_colmap \
+  --urdf-dir /workspace/assets/definitive_urdf/definitive_urdf \
+  --max-frames 1
+```
+
+The exporter replays the first rendered frame in SAPIEN to recover actor segmentation and sample the part-labeled point cloud.
+
+## Single-Model Test
+
+For the PARIS subset line:
+
+```text
+USB/100109 0
+```
+
+use model folder `USB_100109` and URDF `USB_100109.urdf`.
+
+```bash
+python /workspace/scripts/export_colmap_dataset.py \
+  --model-output /workspace/output/preparation_definitive_urdf_colmap/USB_100109 \
+  --urdf /workspace/assets/definitive_urdf/definitive_urdf/USB_100109.urdf \
+  --max-frames 1
+```
+
+Expected files after the test:
+
+```text
+/workspace/output/preparation_definitive_urdf_colmap/USB_100109/colmap/sparse/0/images.txt
+/workspace/output/preparation_definitive_urdf_colmap/USB_100109/colmap/sparse/0/points3D.txt
+/workspace/output/preparation_definitive_urdf_colmap/USB_100109/pointcloud/points3D_parts.ply
+/workspace/output/preparation_definitive_urdf_colmap/USB_100109/pointcloud/joint_metadata.json
+/workspace/output/preparation_definitive_urdf_colmap/USB_100109/metadata/colmap_export.json
+```
+
+## Relevant Code
+
+```text
+scripts/run.py                    full batch renderer and optional COLMAP/PLY export
+scripts/export_colmap_dataset.py  COLMAP/PLY exporter from rendered outputs
+scripts/read_write_model.py       COLMAP cameras/images/points3D reader/writer
+src/render_urdf_multiview.py      direct renderer CLI
+src/sapien_urdf_renderer.py       SAPIEN rendering, depth, masks, segmentation
 ```
