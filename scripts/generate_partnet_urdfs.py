@@ -54,6 +54,77 @@ class ResolvedVisual:
     mesh_scale: str | None
 
 
+PARTNET_DEFAULT_ROOT_QUAT_WXYZ = (
+    0.7071067811865476,
+    0.7071067811865475,
+    0.0,
+    0.0,
+)
+
+FRONT_VIEW_TOKENS = {
+    "door",
+    "drawer",
+    "screen",
+    "lid",
+    "cover",
+    "panel",
+    "flap",
+    "cap",
+}
+
+FRONT_VIEW_CATEGORY_TOKENS = {
+    "storagefurniture",
+    "cabinet",
+    "refrigerator",
+    "oven",
+    "washingmachine",
+    "dishwasher",
+    "microwave",
+    "laptop",
+    "window",
+    "safe",
+    "toilet",
+    "trashcan",
+}
+
+BODY_TOKENS = {
+    "body",
+    "base",
+    "frame",
+    "cabinet",
+    "furniturebody",
+    "ovenbody",
+    "washingmachinebody",
+    "laptopbase",
+    "basebody",
+}
+
+JOINT_TOKEN_WEIGHTS = {
+    "door": 10.0,
+    "drawer": 10.0,
+    "screen": 10.0,
+    "lid": 9.0,
+    "cover": 8.0,
+    "cap": 7.0,
+    "panel": 5.0,
+    "flap": 7.0,
+    "blade": 8.0,
+    "usbrotation": 8.0,
+    "screenframe": 4.0,
+    "screen_side": 4.0,
+    "screenfront": 4.0,
+    "handle": 3.0,
+    "lever": 5.0,
+    "spout": 5.0,
+    "button": 1.5,
+    "switch": 3.0,
+    "seat": 6.0,
+    "back": 5.0,
+    "wheel": 2.5,
+    "knob": -6.0,
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate PartNet-consistent URDFs (2-link: fixed+moving)"
@@ -66,7 +137,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-root",
         default="assets/PARIS/dataset/data/sapien",
-        help="PARIS source root (<category>/<id>/textured_objs/trans.json)",
+        help=(
+            "Optional PARIS source root (<category>/<id>/textured_objs/trans.json). "
+            "Used only for PARIS discovery or to reuse trans.json joint ids when an explicit "
+            "subset entry does not already provide a joint id."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -77,6 +152,15 @@ def parse_args() -> argparse.Namespace:
         "--paris",
         action="store_true",
         help="Use only models discovered from PARIS source root.",
+    )
+    parser.add_argument(
+        "--all-partnet",
+        action="store_true",
+        help=(
+            "Discover every object under --partnet-root. When a matching object exists "
+            "under --source-root, reuse its PARIS category/joint_id; otherwise fall back "
+            "to PartNet meta.json category and auto-select the first active joint."
+        ),
     )
     parser.add_argument(
         "--subset-file",
@@ -96,6 +180,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--canonical-manifest-out",
+        default=None,
+        help=(
+            "Optional output path for the canonicalization manifest consumed by "
+            "scripts/run.py. Default: <output-dir>/partnet_canonical_manifest.json"
+        ),
+    )
+    parser.add_argument(
         "--summary-out",
         default=None,
         help=(
@@ -112,6 +204,23 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print actions without writing files.",
+    )
+    parser.add_argument(
+        "--include-result-static-meshes",
+        dest="include_result_static_meshes",
+        action="store_true",
+        default=True,
+        help=(
+            "Include OBJ meshes listed in result_after_merging.json/result.json but missing "
+            "from mobility.urdf as fixed base_link visuals. This keeps static/junk/other "
+            "context geometry such as the desktop/table in PartNet object 10211."
+        ),
+    )
+    parser.add_argument(
+        "--no-include-result-static-meshes",
+        dest="include_result_static_meshes",
+        action="store_false",
+        help="Keep the old behavior: only use visual meshes explicitly present in mobility.urdf.",
     )
     return parser.parse_args()
 
@@ -289,6 +398,84 @@ def parse_trans_joint_id(paris_textured_dir: Path) -> int:
     return int(value)
 
 
+def _safe_category_token(category: str | None) -> str:
+    text = (category or "").strip()
+    if not text:
+        return "partnet"
+
+    token = re.sub(r"[^A-Za-z0-9]+", "", text)
+    if not token:
+        return "partnet"
+    if token.isupper():
+        return token
+    return token.lower()
+
+
+def _load_partnet_category(partnet_obj_dir: Path) -> str:
+    meta_path = partnet_obj_dir / "meta.json"
+    if not meta_path.exists():
+        return "partnet"
+
+    try:
+        payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return "partnet"
+
+    if not isinstance(payload, dict):
+        return "partnet"
+    return str(payload.get("model_cat") or "partnet")
+
+
+def _normalize_semantic_token(token: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", token.lower())
+
+
+def load_semantics_map(partnet_obj_dir: Path) -> dict[str, list[str]]:
+    semantics_path = partnet_obj_dir / "semantics.txt"
+    if not semantics_path.exists():
+        return {}
+
+    mapping: dict[str, list[str]] = {}
+    for raw in semantics_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p for p in line.split() if p]
+        if len(parts) < 2:
+            continue
+        link_name = parts[0]
+        tokens = [_normalize_semantic_token(p) for p in parts[1:]]
+        tokens = [token for token in tokens if token]
+        if tokens:
+            mapping[link_name] = tokens
+    return mapping
+
+
+def load_bounding_box(partnet_obj_dir: Path) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    bbox_path = partnet_obj_dir / "bounding_box.json"
+    if not bbox_path.exists():
+        return None
+
+    try:
+        payload = json.loads(bbox_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    mins = payload.get("min")
+    maxs = payload.get("max")
+    if not isinstance(mins, list) or not isinstance(maxs, list) or len(mins) != 3 or len(maxs) != 3:
+        return None
+
+    try:
+        min_tuple = (float(mins[0]), float(mins[1]), float(mins[2]))
+        max_tuple = (float(maxs[0]), float(maxs[1]), float(maxs[2]))
+    except (TypeError, ValueError):
+        return None
+    return min_tuple, max_tuple
+
+
 def parse_mobility_urdf(
     mobility_urdf_path: Path,
 ) -> tuple[dict[str, list[VisualSpec]], list[dict[str, Any]], dict[str, list[str]]]:
@@ -382,7 +569,119 @@ def is_active_joint(joint: dict[str, Any]) -> bool:
     )
 
 
-def select_joint(joints: list[dict[str, Any]], requested_joint_id: int | None) -> dict[str, Any]:
+def _joint_score_details(
+    joint: dict[str, Any],
+    *,
+    link_visuals: dict[str, list[VisualSpec]],
+    children_by_parent: dict[str, list[str]],
+    semantics_map: dict[str, list[str]],
+) -> dict[str, Any]:
+    moving_root = str(joint.get("child_link") or "")
+    moving_links = collect_descendant_links(moving_root, children_by_parent) if moving_root else set()
+    links_with_visuals = [link_name for link_name, visuals in link_visuals.items() if visuals]
+    fixed_links = [link_name for link_name in links_with_visuals if link_name not in moving_links]
+
+    moving_visual_count = sum(len(link_visuals.get(link_name, [])) for link_name in moving_links)
+    fixed_visual_count = sum(len(link_visuals.get(link_name, [])) for link_name in fixed_links)
+    total_visual_count = moving_visual_count + fixed_visual_count
+    moving_ratio = (
+        float(moving_visual_count) / float(total_visual_count)
+        if total_visual_count > 0
+        else 0.0
+    )
+
+    moving_tokens = [
+        token
+        for link_name in sorted(moving_links)
+        for token in semantics_map.get(link_name, [])
+    ]
+    fixed_tokens = [
+        token
+        for link_name in fixed_links
+        for token in semantics_map.get(link_name, [])
+    ]
+
+    score = 0.0
+    score += min(float(moving_visual_count), 120.0) * 0.12
+    score += min(float(fixed_visual_count), 120.0) * 0.02
+
+    if joint.get("type") == "prismatic":
+        score += 1.0
+    elif joint.get("type") == "continuous":
+        score += 0.5
+
+    for token in moving_tokens:
+        score += JOINT_TOKEN_WEIGHTS.get(token, 0.0)
+    for token in fixed_tokens:
+        if token in BODY_TOKENS:
+            score += 0.5
+
+    if moving_visual_count <= 1:
+        score -= 1.5
+    if moving_ratio < 0.02:
+        score -= 5.0
+    if moving_ratio < 0.05:
+        score -= 2.0
+    if moving_ratio > 0.85:
+        score -= 4.0
+    if any(token == "knob" for token in moving_tokens) and not any(
+        token in FRONT_VIEW_TOKENS or token in {"blade", "screen", "lever", "usbrotation"}
+        for token in moving_tokens
+    ):
+        score -= 6.0
+
+    return {
+        "joint_name": joint.get("name"),
+        "joint_type": joint.get("type"),
+        "moving_links": sorted(moving_links),
+        "fixed_links": fixed_links,
+        "moving_visual_count": moving_visual_count,
+        "fixed_visual_count": fixed_visual_count,
+        "moving_ratio": moving_ratio,
+        "moving_tokens": moving_tokens,
+        "fixed_tokens": fixed_tokens,
+        "score": score,
+    }
+
+
+def rank_active_joints(
+    joints: list[dict[str, Any]],
+    *,
+    link_visuals: dict[str, list[VisualSpec]],
+    children_by_parent: dict[str, list[str]],
+    semantics_map: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    ranked: list[dict[str, Any]] = []
+    for joint in joints:
+        if not is_active_joint(joint):
+            continue
+        entry = _joint_score_details(
+            joint,
+            link_visuals=link_visuals,
+            children_by_parent=children_by_parent,
+            semantics_map=semantics_map,
+        )
+        entry["joint"] = joint
+        ranked.append(entry)
+
+    ranked.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            10**9 if _joint_numeric_index(str(item["joint_name"])) is None else _joint_numeric_index(str(item["joint_name"])),
+            str(item["joint_name"] or ""),
+        )
+    )
+    return ranked
+
+
+def select_joint(
+    joints: list[dict[str, Any]],
+    requested_joint_id: int | None,
+    *,
+    link_visuals: dict[str, list[VisualSpec]] | None = None,
+    children_by_parent: dict[str, list[str]] | None = None,
+    semantics_map: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     if requested_joint_id is not None:
         wanted_name = f"joint_{requested_joint_id}"
         for joint in joints:
@@ -408,6 +707,16 @@ def select_joint(joints: list[dict[str, Any]], requested_joint_id: int | None) -
     candidates = [j for j in joints if is_active_joint(j)]
     if not candidates:
         raise RuntimeError("No active kinematic joint candidates found")
+
+    if link_visuals is not None and children_by_parent is not None and semantics_map is not None:
+        ranked = rank_active_joints(
+            joints,
+            link_visuals=link_visuals,
+            children_by_parent=children_by_parent,
+            semantics_map=semantics_map,
+        )
+        if ranked:
+            return dict(ranked[0]["joint"])
 
     candidates.sort(
         key=lambda j: (
@@ -464,6 +773,76 @@ def resolve_mesh_path(partnet_obj_dir: Path, mesh_ref: str) -> Path | None:
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
+
+
+def _normalize_result_obj_ref(obj_ref: str) -> str:
+    """Convert PartNet result.json obj tokens to mesh references."""
+    text = obj_ref.strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    name = Path(text).name
+    if not name.lower().endswith(".obj"):
+        name = f"{name}.obj"
+    return f"textured_objs/{name}"
+
+
+def _collect_result_obj_refs_from_node(node: Any, out: list[str]) -> None:
+    if not isinstance(node, dict):
+        return
+
+    objs = node.get("objs")
+    if isinstance(objs, list):
+        for obj in objs:
+            if isinstance(obj, str):
+                ref = _normalize_result_obj_ref(obj)
+                if ref:
+                    out.append(ref)
+
+    children = node.get("children")
+    if isinstance(children, list):
+        for child in children:
+            _collect_result_obj_refs_from_node(child, out)
+
+
+def load_result_static_mesh_paths(partnet_obj_dir: Path) -> list[Path]:
+    """Return all mesh paths listed by PartNet result files, preserving order.
+
+    PartNet-Mobility mobility.urdf can omit static/junk/other context geometry.
+    The point_sample files, however, are sampled from the full result tree. Reading
+    result_after_merging.json/result.json recovers those omitted OBJ files and
+    attaches them as fixed visuals.
+    """
+    refs: list[str] = []
+    for filename in ("result_after_merging.json", "result.json"):
+        path = partnet_obj_dir / filename
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+
+        nodes = payload if isinstance(payload, list) else [payload]
+        for node in nodes:
+            _collect_result_obj_refs_from_node(node, refs)
+
+        if refs:
+            # Prefer result_after_merging.json when available and useful.
+            break
+
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for ref in refs:
+        mesh_path = resolve_mesh_path(partnet_obj_dir, ref)
+        if mesh_path is None:
+            continue
+        key = mesh_path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(mesh_path)
+    return paths
 
 
 def add_visual_mesh(
@@ -551,6 +930,42 @@ def discover_paris_models(source_root: Path) -> list[ModelSpec]:
     return models
 
 
+def discover_all_partnet_models(
+    partnet_root: Path,
+    source_root: Path | None,
+) -> list[ModelSpec]:
+    paris_models_by_id: dict[str, ModelSpec] = {}
+    if source_root is not None and source_root.exists():
+        paris_models_by_id = {
+            model.object_id: model for model in discover_paris_models(source_root=source_root)
+        }
+
+    models: list[ModelSpec] = []
+    for object_dir in sorted(p for p in partnet_root.iterdir() if p.is_dir()):
+        object_id = object_dir.name
+        mobility_path = object_dir / "mobility.urdf"
+        if not mobility_path.exists():
+            continue
+
+        paris_model = paris_models_by_id.get(object_id)
+        if paris_model is not None:
+            models.append(paris_model)
+            continue
+
+        category = _safe_category_token(_load_partnet_category(object_dir))
+        stem = f"{category}_{object_id}"
+        models.append(
+            ModelSpec(
+                stem=stem,
+                category=category,
+                object_id=object_id,
+                joint_id=None,
+            )
+        )
+
+    return models
+
+
 def _parse_subset_entry(entry: str) -> tuple[str | None, str, int | None]:
     parts = [p for p in re.split(r"[,\s]+", entry.strip()) if p]
     if not parts:
@@ -569,25 +984,46 @@ def _parse_subset_entry(entry: str) -> tuple[str | None, str, int | None]:
     return None, model_token, joint_id
 
 
-def _resolve_category_for_object(source_root: Path, object_id: str, hint: str | None) -> str:
+def _resolve_category_for_object(
+    source_root: Path | None,
+    partnet_root: Path,
+    object_id: str,
+    hint: str | None,
+) -> str:
+    partnet_category = _safe_category_token(_load_partnet_category(partnet_root / object_id))
+
     if hint:
-        direct = source_root / hint / object_id
-        if direct.exists():
-            return hint
-        for cat_dir in source_root.iterdir():
-            if cat_dir.is_dir() and cat_dir.name.lower() == hint.lower():
-                if (cat_dir / object_id).exists():
-                    return cat_dir.name
+        if source_root is not None and source_root.exists():
+            direct = source_root / hint / object_id
+            if direct.exists():
+                return hint
+            for cat_dir in source_root.iterdir():
+                if cat_dir.is_dir() and cat_dir.name.lower() == hint.lower():
+                    if (cat_dir / object_id).exists():
+                        return cat_dir.name
+        return _safe_category_token(hint)
 
-    matches = [cat_dir.name for cat_dir in source_root.iterdir() if cat_dir.is_dir() and (cat_dir / object_id).exists()]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches:
-        raise RuntimeError(f"Could not resolve category for object_id={object_id}")
-    raise RuntimeError(f"Ambiguous category for object_id={object_id}: {matches}")
+    if source_root is not None and source_root.exists():
+        matches = [
+            cat_dir.name
+            for cat_dir in source_root.iterdir()
+            if cat_dir.is_dir() and (cat_dir / object_id).exists()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RuntimeError(f"Ambiguous category for object_id={object_id}: {matches}")
+
+    if partnet_category:
+        return partnet_category
+    raise RuntimeError(f"Could not resolve category for object_id={object_id}")
 
 
-def load_explicit_models_from_subset(subset_file: Path, source_root: Path) -> list[ModelSpec]:
+def load_explicit_models_from_subset(
+    subset_file: Path,
+    source_root: Path | None,
+    partnet_root: Path,
+) -> list[ModelSpec]:
     if subset_file.suffix.lower() == ".json":
         payload = json.loads(subset_file.read_text(encoding="utf-8"))
         items = payload if isinstance(payload, list) else payload.get("models", [])
@@ -620,11 +1056,17 @@ def load_explicit_models_from_subset(subset_file: Path, source_root: Path) -> li
         if not line or line.startswith("#"):
             continue
         category_hint, object_id, joint_id = _parse_subset_entry(line)
-        category = _resolve_category_for_object(source_root=source_root, object_id=object_id, hint=category_hint)
+        category = _resolve_category_for_object(
+            source_root=source_root,
+            partnet_root=partnet_root,
+            object_id=object_id,
+            hint=category_hint,
+        )
         trans_joint = None
-        trans_path = source_root / category / object_id / "textured_objs" / "trans.json"
-        if trans_path.exists():
-            trans_joint = parse_trans_joint_id(source_root / category / object_id / "textured_objs")
+        if source_root is not None and source_root.exists():
+            trans_path = source_root / category / object_id / "textured_objs" / "trans.json"
+            if trans_path.exists():
+                trans_joint = parse_trans_joint_id(source_root / category / object_id / "textured_objs")
         resolved_joint_id = joint_id if joint_id is not None else trans_joint
         stem = f"{category}_{object_id}"
         models.append(ModelSpec(stem=stem, category=category, object_id=object_id, joint_id=resolved_joint_id))
@@ -703,6 +1145,239 @@ def build_two_link_urdf(
     }
 
 
+def _rotation_x_90() -> list[list[float]]:
+    return [
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0],
+    ]
+
+
+def _rotation_z_90() -> list[list[float]]:
+    return [
+        [0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ]
+
+
+def _matmul3(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    out = [[0.0, 0.0, 0.0] for _ in range(3)]
+    for i in range(3):
+        for j in range(3):
+            out[i][j] = (
+                a[i][0] * b[0][j]
+                + a[i][1] * b[1][j]
+                + a[i][2] * b[2][j]
+            )
+    return out
+
+
+def _apply_rotation(rot: list[list[float]], vec: tuple[float, float, float]) -> tuple[float, float, float]:
+    x, y, z = vec
+    return (
+        rot[0][0] * x + rot[0][1] * y + rot[0][2] * z,
+        rot[1][0] * x + rot[1][1] * y + rot[1][2] * z,
+        rot[2][0] * x + rot[2][1] * y + rot[2][2] * z,
+    )
+
+
+def _bbox_corners(
+    mins: tuple[float, float, float],
+    maxs: tuple[float, float, float],
+) -> list[tuple[float, float, float]]:
+    return [
+        (x, y, z)
+        for x in (mins[0], maxs[0])
+        for y in (mins[1], maxs[1])
+        for z in (mins[2], maxs[2])
+    ]
+
+
+def _rotation_matrix_to_quaternion_wxyz(rot: list[list[float]]) -> tuple[float, float, float, float]:
+    r00, r01, r02 = rot[0]
+    r10, r11, r12 = rot[1]
+    r20, r21, r22 = rot[2]
+    trace = r00 + r11 + r22
+
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (r21 - r12) / s
+        y = (r02 - r20) / s
+        z = (r10 - r01) / s
+    elif r00 > r11 and r00 > r22:
+        s = math.sqrt(1.0 + r00 - r11 - r22) * 2.0
+        w = (r21 - r12) / s
+        x = 0.25 * s
+        y = (r01 + r10) / s
+        z = (r02 + r20) / s
+    elif r11 > r22:
+        s = math.sqrt(1.0 + r11 - r00 - r22) * 2.0
+        w = (r02 - r20) / s
+        x = (r01 + r10) / s
+        y = 0.25 * s
+        z = (r12 + r21) / s
+    else:
+        s = math.sqrt(1.0 + r22 - r00 - r11) * 2.0
+        w = (r10 - r01) / s
+        x = (r02 + r20) / s
+        y = (r12 + r21) / s
+        z = 0.25 * s
+
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if norm <= 1e-12:
+        return PARTNET_DEFAULT_ROOT_QUAT_WXYZ
+    return (w / norm, x / norm, y / norm, z / norm)
+
+
+def build_canonical_manifest_entry(
+    *,
+    model: ModelSpec,
+    partnet_obj_dir: Path,
+    selected_joint: dict[str, Any],
+    moving_links: set[str],
+    fixed_links: list[str],
+    moving_visuals: list[ResolvedVisual],
+    fixed_visuals: list[ResolvedVisual],
+    semantics_map: dict[str, list[str]],
+    joint_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    bbox = load_bounding_box(partnet_obj_dir)
+
+    moving_tokens = [
+        token
+        for link_name in sorted(moving_links)
+        for token in semantics_map.get(link_name, [])
+    ]
+    fixed_tokens = [
+        token
+        for link_name in fixed_links
+        for token in semantics_map.get(link_name, [])
+    ]
+    category_token = _safe_category_token(model.category)
+
+    root_rotation = _rotation_x_90()
+    front_facing_reason = None
+    wants_front_view = (
+        category_token in FRONT_VIEW_CATEGORY_TOKENS
+        or any(token in FRONT_VIEW_TOKENS for token in moving_tokens)
+        or any(token in FRONT_VIEW_TOKENS for token in fixed_tokens)
+    )
+
+    bbox_world: dict[str, list[float]] | None = None
+    translation = (0.0, 0.0, 0.0)
+    target = (0.0, 0.0, 0.3)
+    camera_height = 0.7
+    camera_radius = 1.4
+    max_dim = 1.0
+
+    if bbox is not None:
+        bbox_min, bbox_max = bbox
+        corners = _bbox_corners(bbox_min, bbox_max)
+        rotated = [_apply_rotation(root_rotation, corner) for corner in corners]
+        xs = [p[0] for p in rotated]
+        ys = [p[1] for p in rotated]
+        zs = [p[2] for p in rotated]
+
+        xspan = max(xs) - min(xs)
+        yspan = max(ys) - min(ys)
+        if wants_front_view and xspan > yspan:
+            root_rotation = _matmul3(_rotation_z_90(), root_rotation)
+            rotated = [_apply_rotation(root_rotation, corner) for corner in corners]
+            xs = [p[0] for p in rotated]
+            ys = [p[1] for p in rotated]
+            zs = [p[2] for p in rotated]
+            front_facing_reason = "swap_horizontal_extents_for_cam000"
+
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+        zmin, zmax = min(zs), max(zs)
+        xspan = xmax - xmin
+        yspan = ymax - ymin
+        zspan = zmax - zmin
+        max_dim = max(xspan, yspan, zspan, 1e-3)
+
+        translation = (
+            -0.5 * (xmin + xmax),
+            -0.5 * (ymin + ymax),
+            -zmin,
+        )
+
+        bbox_world = {
+            "min": [xmin + translation[0], ymin + translation[1], zmin + translation[2]],
+            "max": [xmax + translation[0], ymax + translation[1], zmax + translation[2]],
+        }
+
+        if wants_front_view:
+            target_z = 0.35 * zspan
+        elif category_token in {"usb", "knife", "blade", "scissor", "stapler", "eyeglasses", "pen", "switch"}:
+            target_z = 0.5 * zspan
+        else:
+            target_z = 0.45 * zspan
+
+        target = (0.0, 0.0, target_z)
+        camera_height = target_z + max(0.2 * max_dim, 0.1)
+        camera_radius = max(2.5 * max_dim, 1.2)
+
+    root_quat = _rotation_matrix_to_quaternion_wxyz(root_rotation)
+    joint_source = "requested_joint_id" if model.joint_id is not None else "heuristic"
+
+    entry = {
+        "stem": model.stem,
+        "category": model.category,
+        "object_id": model.object_id,
+        "requested_joint_id": model.joint_id,
+        "selected_joint_name": selected_joint.get("name"),
+        "selected_joint_type": selected_joint.get("type"),
+        "joint_selection_source": joint_source,
+        "joint_selection_candidates": [
+            {
+                "joint_name": item.get("joint_name"),
+                "joint_type": item.get("joint_type"),
+                "score": float(item.get("score", 0.0)),
+                "moving_visual_count": int(item.get("moving_visual_count", 0)),
+                "fixed_visual_count": int(item.get("fixed_visual_count", 0)),
+                "moving_ratio": float(item.get("moving_ratio", 0.0)),
+                "moving_tokens": item.get("moving_tokens", []),
+                "fixed_tokens": item.get("fixed_tokens", []),
+            }
+            for item in joint_candidates[:3]
+        ],
+        "semantics": {
+            "moving_tokens": moving_tokens,
+            "fixed_tokens": fixed_tokens,
+        },
+        "canonical_policy": {
+            "root_rotation": "model_y_to_world_z",
+            "front_view_adjustment_applied": bool(front_facing_reason),
+            "front_view_adjustment_reason": front_facing_reason,
+            "wants_front_view": wants_front_view,
+        },
+        "root_pose": {
+            "position": [float(translation[0]), float(translation[1]), float(translation[2])],
+            "quaternion_wxyz": [float(root_quat[0]), float(root_quat[1]), float(root_quat[2]), float(root_quat[3])],
+        },
+        "camera": {
+            "radius": float(camera_radius),
+            "height": float(camera_height),
+            "target": [float(target[0]), float(target[1]), float(target[2])],
+            "up": [0.0, 0.0, 1.0],
+        },
+        "geometry_stats": {
+            "moving_mesh_count": len(moving_visuals),
+            "fixed_mesh_count": len(fixed_visuals),
+            "bbox_local": {
+                "min": list(bbox[0]) if bbox is not None else None,
+                "max": list(bbox[1]) if bbox is not None else None,
+            },
+            "bbox_canonical_world": bbox_world,
+            "max_dimension": float(max_dim),
+        },
+    }
+    return entry
+
+
 def main() -> int:
     args = parse_args()
 
@@ -712,7 +1387,9 @@ def main() -> int:
 
     if not partnet_root.exists():
         raise FileNotFoundError(f"PartNet root not found: {partnet_root}")
-    if not source_root.exists():
+    if args.paris and args.all_partnet:
+        raise RuntimeError("Use at most one of --paris or --all-partnet")
+    if args.paris and not source_root.exists():
         raise FileNotFoundError(f"PARIS source root not found: {source_root}")
 
     subset_file = Path(args.subset_file).expanduser().resolve() if args.subset_file else None
@@ -720,7 +1397,12 @@ def main() -> int:
         raise FileNotFoundError(f"Subset file not found: {subset_file}")
 
     models: list[ModelSpec]
-    if args.paris:
+    if args.all_partnet:
+        models = discover_all_partnet_models(
+            partnet_root=partnet_root,
+            source_root=source_root if source_root.exists() else None,
+        )
+    elif args.paris:
         models = discover_paris_models(source_root=source_root)
         if subset_file is not None:
             keys = load_subset_filter(subset_file)
@@ -728,7 +1410,11 @@ def main() -> int:
     else:
         if subset_file is None:
             raise RuntimeError("Without --paris, you must provide --subset-file")
-        models = load_explicit_models_from_subset(subset_file=subset_file, source_root=source_root)
+        models = load_explicit_models_from_subset(
+            subset_file=subset_file,
+            source_root=source_root if source_root.exists() else None,
+            partnet_root=partnet_root,
+        )
 
     if not models:
         raise RuntimeError("No models selected")
@@ -743,6 +1429,7 @@ def main() -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[dict[str, Any]] = []
+    canonical_manifest_models: list[dict[str, Any]] = []
     for model in models:
         record: dict[str, Any] = {
             "model": model.stem,
@@ -758,7 +1445,20 @@ def main() -> int:
                 raise FileNotFoundError(f"Missing mobility.urdf: {mobility_path}")
 
             link_visuals, joints, children_by_parent = parse_mobility_urdf(mobility_path)
-            selected_joint = select_joint(joints=joints, requested_joint_id=model.joint_id)
+            semantics_map = load_semantics_map(partnet_obj_dir)
+            joint_candidates = rank_active_joints(
+                joints,
+                link_visuals=link_visuals,
+                children_by_parent=children_by_parent,
+                semantics_map=semantics_map,
+            )
+            selected_joint = select_joint(
+                joints=joints,
+                requested_joint_id=model.joint_id,
+                link_visuals=link_visuals,
+                children_by_parent=children_by_parent,
+                semantics_map=semantics_map,
+            )
             moving_root = selected_joint.get("child_link")
             if not moving_root:
                 raise RuntimeError("Selected joint has no child_link")
@@ -842,6 +1542,30 @@ def main() -> int:
                         )
                     )
 
+            result_static_mesh_count = 0
+            result_static_meshes: list[str] = []
+            if args.include_result_static_meshes:
+                used_mesh_paths = {
+                    visual.mesh_path.resolve()
+                    for visual in [*fixed_visuals, *moving_visuals]
+                }
+                for mesh_path in load_result_static_mesh_paths(partnet_obj_dir):
+                    key = mesh_path.resolve()
+                    if key in used_mesh_paths:
+                        continue
+                    used_mesh_paths.add(key)
+                    fixed_visuals.append(
+                        ResolvedVisual(
+                            source_link="result_static_extra",
+                            mesh_path=mesh_path,
+                            origin_xyz=(0.0, 0.0, 0.0),
+                            origin_rpy=(0.0, 0.0, 0.0),
+                            mesh_scale=None,
+                        )
+                    )
+                    result_static_mesh_count += 1
+                    result_static_meshes.append(mesh_path.name)
+
             if not moving_visuals or not fixed_visuals:
                 raise RuntimeError(
                     f"Mesh split invalid (fixed={len(fixed_visuals)}, moving={len(moving_visuals)}). "
@@ -857,6 +1581,18 @@ def main() -> int:
                 moving_visuals=moving_visuals,
                 dry_run=bool(args.dry_run),
             )
+            canonical_entry = build_canonical_manifest_entry(
+                model=model,
+                partnet_obj_dir=partnet_obj_dir,
+                selected_joint=selected_joint,
+                moving_links=moving_links,
+                fixed_links=fixed_links,
+                moving_visuals=moving_visuals,
+                fixed_visuals=fixed_visuals,
+                semantics_map=semantics_map,
+                joint_candidates=joint_candidates,
+            )
+            canonical_manifest_models.append(canonical_entry)
 
             record.update(
                 {
@@ -867,6 +1603,10 @@ def main() -> int:
                     "moving_links": sorted(moving_links),
                     "fixed_links": fixed_links,
                     "unresolved_mesh_refs": unresolved,
+                    "result_static_mesh_count": result_static_mesh_count,
+                    "result_static_meshes": result_static_meshes,
+                    "canonical_root_pose": canonical_entry["root_pose"],
+                    "canonical_camera": canonical_entry["camera"],
                     **build_info,
                 }
             )
@@ -905,6 +1645,11 @@ def main() -> int:
         if args.summary_out
         else (output_dir / "partnet_urdf_generation_summary.json").resolve()
     )
+    canonical_manifest_out = (
+        Path(args.canonical_manifest_out).expanduser().resolve()
+        if args.canonical_manifest_out
+        else (output_dir / "partnet_canonical_manifest.json").resolve()
+    )
 
     manifest = [
         {
@@ -915,16 +1660,26 @@ def main() -> int:
         }
         for m in models
     ]
+    canonical_manifest = {
+        "partnet_root": str(partnet_root),
+        "source_root": str(source_root),
+        "output_dir": str(output_dir),
+        "models": canonical_manifest_models,
+    }
 
     if args.dry_run:
         print(f"[dry-run] Would write manifest: {manifest_out}")
+        print(f"[dry-run] Would write canonical manifest: {canonical_manifest_out}")
         print(f"[dry-run] Would write summary: {summary_out}")
     else:
         manifest_out.parent.mkdir(parents=True, exist_ok=True)
+        canonical_manifest_out.parent.mkdir(parents=True, exist_ok=True)
         summary_out.parent.mkdir(parents=True, exist_ok=True)
         manifest_out.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        canonical_manifest_out.write_text(json.dumps(canonical_manifest, indent=2), encoding="utf-8")
         summary_out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"Wrote manifest: {manifest_out}")
+        print(f"Wrote canonical manifest: {canonical_manifest_out}")
         print(f"Wrote summary: {summary_out}")
 
     return 0 if summary["counts"]["error"] == 0 else 1

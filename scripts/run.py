@@ -21,7 +21,7 @@ import argparse
 import colorsys
 import hashlib
 import json
-import matht
+import math
 import shlex
 import subprocess
 import sys
@@ -110,6 +110,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--canonical-manifest-json",
+        default=None,
+        help=(
+            "Optional canonicalization manifest from scripts/generate_partnet_urdfs.py. "
+            "When provided, per-model root poses and camera ring parameters can be "
+            "overridden from the manifest."
+        ),
+    )
+    parser.add_argument(
         "--views-json",
         default=None,
         help=(
@@ -130,7 +139,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fov-y-deg", type=float, default=45.0)
 
     parser.add_argument("--num-frames", type=int, default=60)
+    parser.add_argument(
+        "--joint-delta",
+        type=float,
+        default=None,
+        help=(
+            "Optional final joint displacement relative to the automatically selected q_start. "
+            "When omitted, keep the existing automatic q_end selection. Example: "
+            "--joint-delta -0.35 renders from q_start to q_start-0.35. "
+            "The resulting q_end is clamped to finite joint limits when available."
+        ),
+    )
     parser.add_argument("--save-video", action="store_true")
+    parser.add_argument(
+        "--use-canonical-root-pose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use per-model root poses from --canonical-manifest-json when available.",
+    )
+    parser.add_argument(
+        "--use-canonical-camera",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use per-model camera radius/height/target from --canonical-manifest-json when available.",
+    )
     parser.add_argument(
         "--object-view-profile",
         default="blade_horizontal_stove_storage_front",
@@ -328,6 +360,132 @@ def describe_camera_config(camera_config_path: Path) -> dict[str, Any]:
     return info
 
 
+def load_camera_config_payload(camera_config_path: Path) -> dict[str, Any]:
+    text = camera_config_path.read_text(encoding="utf-8")
+    if camera_config_path.suffix.lower() in {".yaml", ".yml"}:
+        payload = yaml.safe_load(text)
+    else:
+        payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Camera config must be an object: {camera_config_path}")
+    return payload
+
+
+def extract_camera_ring_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    cameras = payload.get("cameras")
+    if not isinstance(cameras, list) or not cameras:
+        raise ValueError("Camera config must contain at least one camera entry")
+
+    first = cameras[0]
+    if not isinstance(first, dict):
+        raise ValueError("Camera config first entry is not an object")
+
+    base: dict[str, Any] = {
+        "num_cams": len(cameras),
+        "width": int(first.get("width", payload.get("image_width", payload.get("width", 640)))),
+        "height_px": int(first.get("height", payload.get("image_height", payload.get("height", 480)))),
+        "near": float(first.get("near", payload.get("default_near", payload.get("near", 0.01)))),
+        "far": float(first.get("far", payload.get("default_far", payload.get("far", 10.0)))),
+    }
+
+    up = first.get("up")
+    if isinstance(up, list) and len(up) == 3:
+        base["up"] = [float(up[0]), float(up[1]), float(up[2])]
+    else:
+        base["up"] = [0.0, 0.0, 1.0]
+
+    if first.get("fov_y_deg") is not None:
+        base["fov_y_deg"] = float(first["fov_y_deg"])
+    elif all(first.get(key) is not None for key in ("fx", "fy", "cx", "cy")):
+        base["fx"] = float(first["fx"])
+        base["fy"] = float(first["fy"])
+        base["cx"] = float(first["cx"])
+        base["cy"] = float(first["cy"])
+    else:
+        base["fov_y_deg"] = 45.0
+
+    return base
+
+
+def load_canonical_manifest_map(canonical_manifest_path: Path) -> dict[str, dict[str, Any]]:
+    payload = json.loads(canonical_manifest_path.read_text(encoding="utf-8"))
+    models = payload.get("models") if isinstance(payload, dict) else payload
+    if not isinstance(models, list):
+        raise ValueError(
+            f"Canonical manifest must be a list or an object with a 'models' list: {canonical_manifest_path}"
+        )
+
+    mapping: dict[str, dict[str, Any]] = {}
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        stem = entry.get("stem")
+        if isinstance(stem, str) and stem:
+            mapping[stem] = entry
+    return mapping
+
+
+def build_per_model_camera_config(
+    *,
+    camera_gen: Path,
+    tmp_dir: Path,
+    model_name: str,
+    base_camera_defaults: dict[str, Any],
+    canonical_camera: dict[str, Any],
+    dry_run: bool,
+) -> Path:
+    out_path = tmp_dir / f"{model_name}_cameras.json"
+    cmd = [
+        sys.executable,
+        str(camera_gen),
+        "--output",
+        str(out_path),
+        "--num-cams",
+        str(int(base_camera_defaults["num_cams"])),
+        "--radius",
+        str(float(canonical_camera["radius"])),
+        "--height",
+        str(float(canonical_camera["height"])),
+        "--target",
+        str(float(canonical_camera["target"][0])),
+        str(float(canonical_camera["target"][1])),
+        str(float(canonical_camera["target"][2])),
+        "--up",
+        str(float(canonical_camera.get("up", base_camera_defaults["up"])[0])),
+        str(float(canonical_camera.get("up", base_camera_defaults["up"])[1])),
+        str(float(canonical_camera.get("up", base_camera_defaults["up"])[2])),
+        "--width",
+        str(int(base_camera_defaults["width"])),
+        "--height-px",
+        str(int(base_camera_defaults["height_px"])),
+        "--near",
+        str(float(base_camera_defaults["near"])),
+        "--far",
+        str(float(base_camera_defaults["far"])),
+        "--name-prefix",
+        "cam",
+    ]
+
+    if "fov_y_deg" in base_camera_defaults:
+        cmd.extend(["--fov-y-deg", str(float(base_camera_defaults["fov_y_deg"]))])
+    else:
+        cmd.extend(
+            [
+                "--fx",
+                str(float(base_camera_defaults["fx"])),
+                "--fy",
+                str(float(base_camera_defaults["fy"])),
+                "--cx",
+                str(float(base_camera_defaults["cx"])),
+                "--cy",
+                str(float(base_camera_defaults["cy"])),
+            ]
+        )
+
+    run_command(cmd, dry_run=dry_run)
+    return out_path
+
+
 def run_command(cmd: list[str], dry_run: bool = False) -> subprocess.CompletedProcess[str] | None:
     print("$", " ".join(shlex.quote(part) for part in cmd))
     if dry_run:
@@ -348,19 +506,73 @@ def run_command(cmd: list[str], dry_run: bool = False) -> subprocess.CompletedPr
     return proc
 
 
-def preflight_sapien_renderer(dry_run: bool = False) -> None:
-    cmd = [
-        sys.executable,
-        "-c",
-        (
-            "import sapien.core as sapien; "
-            "engine = sapien.Engine(); "
-            "renderer = sapien.SapienRenderer(offscreen_only=True); "
-            "engine.set_renderer(renderer); "
-            "print('SAPIEN renderer preflight OK')"
-        ),
-    ]
-    run_command(cmd, dry_run=dry_run)
+def preflight_sapien_renderer(
+    *,
+    renderer_cli: Path,
+    sample_urdfs: list[Path],
+    camera_config_path: Path,
+    dry_run: bool = False,
+) -> None:
+    if dry_run:
+        return
+
+    sample_urdf: Path | None = None
+    joint_name: str | None = None
+    q_start: float | None = None
+    q_end: float | None = None
+
+    for candidate in sample_urdfs:
+        list_cmd = [
+            sys.executable,
+            str(renderer_cli),
+            "list-joints",
+            "--urdf",
+            str(candidate),
+            "--as-json",
+        ]
+        list_proc = run_list_joints_command(list_cmd, dry_run=False)
+        if list_proc is None:
+            continue
+
+        joints = parse_joints_from_cli_output(list_proc.stdout)
+        try:
+            resolved_joint_name, resolved_q_start, resolved_q_end = choose_joint_and_range(joints)
+        except Exception:
+            continue
+
+        sample_urdf = candidate
+        joint_name = resolved_joint_name
+        q_start = resolved_q_start
+        q_end = resolved_q_end
+        break
+
+    if sample_urdf is None or joint_name is None or q_start is None or q_end is None:
+        raise RuntimeError("SAPIEN render preflight could not find a sample URDF with a 1-DoF joint")
+
+    with tempfile.TemporaryDirectory(prefix="sapien_renderer_preflight_") as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        render_cmd = [
+            sys.executable,
+            str(renderer_cli),
+            "render",
+            "--urdf",
+            str(sample_urdf),
+            "--joint-name",
+            joint_name,
+            "--q-start",
+            str(q_start),
+            "--q-end",
+            str(q_end),
+            "--num-frames",
+            "2",
+            "--views-json",
+            str(camera_config_path),
+            "--output-dir",
+            str(tmp_dir / "render"),
+        ]
+        run_command(render_cmd, dry_run=False)
+
+    print(f"SAPIEN renderer preflight OK on sample URDF: {sample_urdf.name}")
 
 
 def discover_urdfs(urdf_dir: Path) -> list[Path]:
@@ -384,7 +596,61 @@ def parse_joints_from_cli_output(stdout: str) -> list[dict[str, Any]]:
     return data
 
 
-def choose_joint_and_range(joints: list[dict[str, Any]]) -> tuple[str, float, float]:
+def run_list_joints_command(
+    cmd: list[str],
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess[str] | None:
+    print("$", " ".join(shlex.quote(part) for part in cmd))
+    if dry_run:
+        return None
+
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    if proc.returncode == 0:
+        return proc
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+
+    try:
+        parse_joints_from_cli_output(stdout)
+    except Exception:
+        details: list[str] = []
+        if stderr:
+            details.append(f"stderr: {stderr}")
+        if stdout:
+            details.append(f"stdout: {stdout}")
+        detail_text = " | ".join(details) if details else "no stdout/stderr captured"
+        raise RuntimeError(f"Command failed (exit={proc.returncode}): {' '.join(cmd)} | {detail_text}")
+
+    print(
+        f"[warn] list-joints exited {proc.returncode} but produced valid JSON; continuing"
+    )
+    if stderr:
+        print(f"[warn] list-joints stderr: {stderr}")
+    return proc
+
+
+def _joint_limit_pair(joint: dict[str, Any]) -> tuple[float, float] | None:
+    limits = joint.get("limits")
+    if not (
+        isinstance(limits, list)
+        and limits
+        and isinstance(limits[0], list)
+        and len(limits[0]) == 2
+    ):
+        return None
+
+    lo = float(limits[0][0])
+    hi = float(limits[0][1])
+    if not (math.isfinite(lo) and math.isfinite(hi) and hi > lo):
+        return None
+    return lo, hi
+
+
+def choose_joint_and_range(
+    joints: list[dict[str, Any]],
+    joint_delta: float | None = None,
+) -> tuple[str, float, float]:
     candidates = [j for j in joints if int(j.get("dof", 0)) == 1]
     if not candidates:
         raise RuntimeError("No 1-DoF active joints found")
@@ -395,18 +661,39 @@ def choose_joint_and_range(joints: list[dict[str, Any]]) -> tuple[str, float, fl
     q_start = -0.5
     q_end = 0.5
 
-    limits = joint.get("limits")
-    if isinstance(limits, list) and limits and isinstance(limits[0], list) and len(limits[0]) == 2:
-        lo = float(limits[0][0])
-        hi = float(limits[0][1])
-        if math.isfinite(lo) and math.isfinite(hi) and hi > lo:
-            span = hi - lo
-            margin = 0.05 * span
-            q_start = lo + margin
-            q_end = hi - margin
-            if q_end <= q_start:
-                q_start = lo
-                q_end = hi
+    limit_pair = _joint_limit_pair(joint)
+    if limit_pair is not None:
+        lo, hi = limit_pair
+        span = hi - lo
+        margin = 0.05 * span
+        lo_inner = lo + margin
+        hi_inner = hi - margin
+        if hi_inner <= lo_inner:
+            lo_inner = lo
+            hi_inner = hi
+
+        # Prefer the articulation's neutral q=0 pose when it is valid so frame_000000
+        # stays close to the canonical PartNet object state instead of an extreme limit.
+        if lo <= 0.0 <= hi:
+            q_start = 0.0
+            left_span = abs(q_start - lo_inner)
+            right_span = abs(hi_inner - q_start)
+            q_end = lo_inner if left_span >= right_span else hi_inner
+            if math.isclose(q_end, q_start):
+                q_end = hi_inner if not math.isclose(hi_inner, q_start) else lo_inner
+        else:
+            q_start = lo_inner
+            q_end = hi_inner
+
+    if joint_delta is not None:
+        if not math.isfinite(float(joint_delta)):
+            raise ValueError("--joint-delta must be a finite float")
+        requested_q_end = q_start + float(joint_delta)
+        if limit_pair is not None:
+            lo, hi = limit_pair
+            q_end = min(max(requested_q_end, lo), hi)
+        else:
+            q_end = requested_q_end
 
     return name, q_start, q_end
 
@@ -667,6 +954,8 @@ def main() -> int:
         raise ValueError("--colmap-frame-step must be >= 1")
     if args.colmap_max_frames is not None and args.colmap_max_frames < 0:
         raise ValueError("--colmap-max-frames must be >= 0 when provided")
+    if args.joint_delta is not None and not math.isfinite(float(args.joint_delta)):
+        raise ValueError("--joint-delta must be a finite float")
 
     if args.urdf_dir and args.assets_dir:
         p1 = Path(args.urdf_dir).expanduser().resolve()
@@ -692,6 +981,9 @@ def main() -> int:
     camera_config_input: Path | None = None
     if args.camera_config_json:
         camera_config_input = Path(args.camera_config_json).expanduser().resolve()
+    canonical_manifest_path: Path | None = None
+    if args.canonical_manifest_json:
+        canonical_manifest_path = Path(args.canonical_manifest_json).expanduser().resolve()
 
     renderer_cli = repo_root / "src" / "render_urdf_multiview.py"
     camera_gen = repo_root / "scripts" / "generate_cameras_json.py"
@@ -701,6 +993,8 @@ def main() -> int:
     print(f"Resolved urdf_dir: {urdf_dir}")
     print(f"Resolved output_root: {output_root}")
     print(f"Resolved views_json: {views_json}")
+    if canonical_manifest_path is not None:
+        print(f"Resolved canonical_manifest_json: {canonical_manifest_path}")
     if args.force_link_colors:
         print(f"Force-link-colors enabled (seed={args.force_color_seed!r})")
     if args.export_colmap:
@@ -722,6 +1016,8 @@ def main() -> int:
         raise FileNotFoundError(f"Camera generator not found: {camera_gen}")
     if args.export_colmap and not colmap_exporter.exists():
         raise FileNotFoundError(f"COLMAP exporter not found: {colmap_exporter}")
+    if canonical_manifest_path is not None and not canonical_manifest_path.exists():
+        raise FileNotFoundError(f"Canonical manifest not found: {canonical_manifest_path}")
 
     # Decide camera config path and whether generation is needed.
     should_generate_camera = False
@@ -780,6 +1076,10 @@ def main() -> int:
         print(f"Using camera config without regeneration: {camera_config_path}")
 
     camera_cfg_info = describe_camera_config(camera_config_path)
+    camera_cfg_payload = load_camera_config_payload(camera_config_path) if camera_config_path.exists() else {}
+    base_camera_defaults = (
+        extract_camera_ring_defaults(camera_cfg_payload) if camera_cfg_payload else None
+    )
     cam_count = camera_cfg_info.get("num_cameras")
     cam0_dist = camera_cfg_info.get("cam0_distance_to_target")
     cam0_dist_origin = camera_cfg_info.get("cam0_distance_origin")
@@ -795,7 +1095,12 @@ def main() -> int:
 
     if not args.dry_run and not args.skip_renderer_preflight:
         print("Running SAPIEN renderer preflight...")
-        preflight_sapien_renderer(dry_run=False)
+        preflight_sapien_renderer(
+            renderer_cli=renderer_cli,
+            sample_urdfs=urdf_files,
+            camera_config_path=camera_config_path,
+            dry_run=False,
+        )
 
     if not args.dry_run:
         output_root.mkdir(parents=True, exist_ok=True)
@@ -805,9 +1110,11 @@ def main() -> int:
         "repo_root": str(repo_root),
         "urdf_dir": str(urdf_dir),
         "views_json": str(camera_config_path),
+        "canonical_manifest_json": str(canonical_manifest_path) if canonical_manifest_path is not None else None,
         "camera_config_stats": camera_cfg_info,
         "object_view_profile": args.object_view_profile,
         "non_blade_orbit_axis": args.non_blade_orbit_axis,
+        "joint_delta_cli": args.joint_delta,
         "export_colmap": bool(args.export_colmap),
         "colmap_sample_stride": args.colmap_sample_stride,
         "colmap_max_points_per_image": args.colmap_max_points_per_image,
@@ -822,6 +1129,11 @@ def main() -> int:
 
     mesh_search_roots = build_mesh_search_roots(repo_root=repo_root, urdf_dir=urdf_dir)
     view_profile = OBJECT_VIEW_PROFILES.get(args.object_view_profile, {})
+    canonical_manifest_map = (
+        load_canonical_manifest_map(canonical_manifest_path)
+        if canonical_manifest_path is not None
+        else {}
+    )
 
     for urdf in urdf_files:
         model_name = safe_model_name(urdf_path=urdf, urdf_root=urdf_dir)
@@ -846,6 +1158,7 @@ def main() -> int:
         try:
             with tempfile.TemporaryDirectory(prefix="run_pipeline_urdf_") as tmp_dir_str:
                 tmp_dir = Path(tmp_dir_str)
+                canonical_entry = canonical_manifest_map.get(model_name)
                 runtime_urdf, remapped, forced_colors = prepare_runtime_urdf(
                     urdf,
                     urdf_dir,
@@ -857,6 +1170,36 @@ def main() -> int:
                 item["urdf_runtime"] = str(runtime_urdf)
                 item["mesh_paths_remapped"] = remapped
                 item["forced_visual_colors"] = forced_colors
+                camera_config_for_model = camera_config_path
+
+                if (
+                    canonical_entry is not None
+                    and args.use_canonical_root_pose
+                    and isinstance(canonical_entry.get("root_pose"), dict)
+                ):
+                    root_pose_override = canonical_entry["root_pose"]
+                    root_pose_source = "canonical_manifest"
+                if root_pose_override is not None:
+                    item["root_pose_override"] = root_pose_override
+                    item["root_pose_override_source"] = root_pose_source
+                if (
+                    canonical_entry is not None
+                    and args.use_canonical_camera
+                    and isinstance(canonical_entry.get("camera"), dict)
+                    and base_camera_defaults is not None
+                ):
+                    camera_config_for_model = build_per_model_camera_config(
+                        camera_gen=camera_gen,
+                        tmp_dir=tmp_dir,
+                        model_name=model_name,
+                        base_camera_defaults=base_camera_defaults,
+                        canonical_camera=canonical_entry["camera"],
+                        dry_run=args.dry_run,
+                    )
+                    item["camera_config_override"] = str(camera_config_for_model)
+                    item["camera_config_override_source"] = "canonical_manifest"
+                if canonical_entry is not None:
+                    item["canonical_manifest_applied"] = True
 
                 list_cmd = [
                     sys.executable,
@@ -866,7 +1209,7 @@ def main() -> int:
                     str(runtime_urdf),
                     "--as-json",
                 ]
-                list_proc = run_command(list_cmd, dry_run=args.dry_run)
+                list_proc = run_list_joints_command(list_cmd, dry_run=args.dry_run)
 
                 if args.dry_run:
                     item["joint_name"] = "<auto-first-1dof>"
@@ -878,7 +1221,10 @@ def main() -> int:
                     joints = parse_joints_from_cli_output(list_proc.stdout)
 
                     try:
-                        joint_name, q_start, q_end = choose_joint_and_range(joints)
+                        joint_name, q_start, q_end = choose_joint_and_range(
+                            joints,
+                            joint_delta=args.joint_delta,
+                        )
                     except RuntimeError as exc:
                         if "No 1-DoF active joints found" in str(exc):
                             item["status"] = "skipped_no_1dof"
@@ -891,6 +1237,9 @@ def main() -> int:
                     item["joint_name"] = joint_name
                     item["q_start"] = q_start
                     item["q_end"] = q_end
+                    item["joint_delta_requested"] = args.joint_delta
+                    item["joint_delta_applied"] = q_end - q_start
+                    item["joint_delta_source"] = "cli" if args.joint_delta is not None else "auto"
 
                     render_cmd = [
                         sys.executable,
@@ -907,7 +1256,7 @@ def main() -> int:
                         "--num-frames",
                         str(args.num_frames),
                         "--views-json",
-                        str(camera_config_path),
+                        str(camera_config_for_model),
                         "--output-dir",
                         str(model_output),
                     ]
