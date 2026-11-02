@@ -9,6 +9,15 @@ class ConfigValidationError(ValueError):
     """Raised when a render job configuration is invalid."""
 
 
+VELOCITY_PROFILE_CHOICES = (
+    "linear",
+    "ease-in",
+    "ease-out",
+    "ease-in-out",
+    "trapezoid",
+)
+
+
 @dataclass(slots=True)
 class RootPoseSpec:
     """Root pose for placing the articulation in world coordinates."""
@@ -134,6 +143,8 @@ class RenderJobConfig:
     num_frames: int | None = None
     fps: float | None = None
     duration_sec: float | None = None
+    velocity_profile: str = "linear"
+    velocity_profile_accel_fraction: float = 0.2
     joint_space: bool = True
     root_pose: RootPoseSpec | None = None
     image_width: int | None = None
@@ -176,6 +187,8 @@ class RenderJobConfig:
             num_frames=int(data["num_frames"]) if data.get("num_frames") is not None else None,
             fps=float(data["fps"]) if data.get("fps") is not None else None,
             duration_sec=float(data["duration_sec"]) if data.get("duration_sec") is not None else None,
+            velocity_profile=str(data.get("velocity_profile", "linear")),
+            velocity_profile_accel_fraction=float(data.get("velocity_profile_accel_fraction", 0.2)),
             cameras=cameras,
             output_dir=str(data["output_dir"]),
             joint_space=bool(data.get("joint_space", True)),
@@ -205,6 +218,12 @@ class RenderJobConfig:
             raise ConfigValidationError("joint_name is required")
         if not self.output_dir:
             raise ConfigValidationError("output_dir is required")
+        if self.velocity_profile not in VELOCITY_PROFILE_CHOICES:
+            raise ConfigValidationError(
+                "velocity_profile must be one of: " + ", ".join(VELOCITY_PROFILE_CHOICES)
+            )
+        if not (0.0 < self.velocity_profile_accel_fraction <= 0.5):
+            raise ConfigValidationError("velocity_profile_accel_fraction must be in (0, 0.5]")
 
         if not self.cameras:
             raise ConfigValidationError("At least one camera must be provided")

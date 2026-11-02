@@ -7,7 +7,8 @@ src/render_urdf_multiview.py. It replays the same render schedule to recover
 actor-level segmentation, then writes:
 
 - colmap/images/<camera>/<frame>.png
-- colmap/sparse/0/cameras.{txt,bin}
+- colmap/sparse_unmasked/0: original pre-mask model
+- colmap/sparse/0/cameras.{txt,bin} (foreground-filtered model)
 - colmap/sparse/0/images.{txt,bin}
 - colmap/sparse/0/points3D.{txt,bin}
 - pointcloud/points3D_parts.ply with a uchar "part" vertex property
@@ -19,6 +20,7 @@ Part labels follow the definitive two-link URDF convention:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -50,6 +52,7 @@ for import_dir in (SCRIPT_DIR, SRC_DIR):
 
 from camera_utils import camera_pose_matrix  # noqa: E402
 from config_types import CameraSpec, RenderJobConfig  # noqa: E402
+from mask_colmap_models import write_pair
 from read_write_model import Camera, Image, Point3D, qvec2rotmat, rotmat2qvec, write_model  # noqa: E402
 
 
@@ -174,6 +177,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum sampled 3D points per image. Use 0 for no per-image cap.",
     )
     parser.add_argument(
+        "--start-frame",
+        type=int,
+        default=0,
+        help="First frame index to export (0-based). Default 0 exports from frame_000000.",
+    )
+    parser.add_argument(
         "--frame-step",
         type=int,
         default=1,
@@ -189,11 +198,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--no-final-frame", action="store_true",
+        help="Disable the additional independent COLMAP/PLY export at the last rendered frame.",
+    )
+    parser.add_argument(
         "--image-mode",
         choices=["symlink", "copy", "none"],
-        default="symlink",
+        default="copy",
         help=(
-            "How to populate colmap/images. Missing source RGB files are written "
+            "How to populate colmap/images (copy works on exFAT). "
+            "Missing source RGB files are written "
             "from the replayed render when mode is symlink or copy."
         ),
     )
@@ -725,6 +739,30 @@ def _write_colmap_model(
         write_model(cameras, images, points3D, str(sparse_dir), ext=".bin")
 
 
+def _rendered_joint_values(model_output: Path, cfg: RenderJobConfig) -> np.ndarray:
+    """Use the exact rendered q(t), not an independently linearized trajectory."""
+    count = cfg.resolved_num_frames()
+    csv_path = model_output / "metadata" / "frame_values.csv"
+    if csv_path.is_file():
+        values = np.full(count, np.nan, dtype=np.float64)
+        with csv_path.open(newline="", encoding="utf-8") as stream:
+            reader = csv.DictReader(stream)
+            if reader.fieldnames is None or "frame_index" not in reader.fieldnames or cfg.joint_name not in reader.fieldnames:
+                raise ValueError(f"Invalid trajectory CSV columns: {csv_path}")
+            for row in reader:
+                index = int(row["frame_index"])
+                if index < 0 or index >= count or np.isfinite(values[index]):
+                    raise ValueError(f"Invalid/duplicate frame index {index} in {csv_path}")
+                values[index] = float(row[cfg.joint_name])
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"Incomplete/nonfinite trajectory in {csv_path}")
+        return values
+    if count == 1:
+        return np.array([float(cfg.q_start)], dtype=np.float64)
+    from sapien_urdf_renderer import _sample_joint_trajectory
+    return _sample_joint_trajectory(cfg)
+
+
 def export_model(
     model_output: Path,
     urdf_path: Path | None,
@@ -771,10 +809,8 @@ def export_model(
 
     colmap_cameras = _build_colmap_cameras(cfg.cameras)
     num_frames = cfg.resolved_num_frames()
-    q_values = np.linspace(
-        float(cfg.q_start), float(cfg.q_end), num_frames, dtype=np.float64
-    )
-    frame_indices = list(range(0, num_frames, int(args.frame_step)))
+    q_values = _rendered_joint_values(model_output, cfg)
+    frame_indices = list(range(int(args.start_frame), num_frames, int(args.frame_step)))
     if args.max_frames is not None and int(args.max_frames) > 0:
         frame_indices = frame_indices[: int(args.max_frames)]
 
@@ -879,13 +915,7 @@ def export_model(
         "1": sum(1 for part in point_parts.values() if int(part) == 1),
     }
 
-    _write_colmap_model(
-        cameras=colmap_cameras,
-        images=colmap_images,
-        points3D=points3D,
-        sparse_dir=sparse_dir,
-        model_format=args.model_format,
-    )
+    mask_stats = write_pair(colmap_dir, colmap_cameras, colmap_images, points3D, model_output / "mask", args.model_format)
     _write_part_ply(
         points3D=points3D,
         point_parts=point_parts,
@@ -905,8 +935,8 @@ def export_model(
         images_dir=str(images_dir) if images_dir is not None else None,
         pointcloud_ply=str(ply_path),
         num_cameras=len(colmap_cameras),
-        num_images=len(colmap_images),
-        num_points3D=len(points3D),
+        num_images=mask_stats["num_images"],
+        num_points3D=mask_stats["num_points3D_masked"],
         point_part_counts=part_counts,
         model_format=args.model_format,
         image_mode=args.image_mode,
@@ -923,7 +953,13 @@ def export_model(
     )
 
     metadata_payload = asdict(stats)
-    metadata_payload_path = model_output / "metadata" / "colmap_export.json"
+    metadata_payload["point_part_counts_unmasked"] = metadata_payload.pop("point_part_counts")
+    metadata_payload.update(sparse_unmasked_dir=str(colmap_dir / "sparse_unmasked/0"),
+                            num_points3D=mask_stats["num_points3D_masked"],
+                            num_points3D_unmasked=len(points3D), mask_filtering=mask_stats,
+                            pointcloud_ply_filtering="PLY files unchanged; masked selection is in sparse/0")
+    metadata_filename = getattr(args, "metadata_filename", "colmap_export.json")
+    metadata_payload_path = model_output / "metadata" / metadata_filename
     metadata_payload_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_payload_path.write_text(
         json.dumps(metadata_payload, indent=2), encoding="utf-8"
@@ -966,12 +1002,40 @@ def main() -> int:
             )
             payload = asdict(stats)
             payload["status"] = "ok"
+            payload["export"] = "initial"
             results.append(payload)
             print(
-                f"[OK] {model_output.name}: "
+                f"[OK] {model_output.name} (initial): "
                 f"images={stats.num_images}, points3D={stats.num_points3D}, "
                 f"colmap={stats.colmap_dir}, ply={stats.pointcloud_ply}"
             )
+
+            # A separate, self-contained COLMAP reconstruction at t=T.
+            # This never mixes points from different articulated poses.
+            if not args.no_final_frame:
+                cfg = _load_render_config(model_output, urdf_path=urdf_path)
+                last_idx = cfg.resolved_num_frames() - 1
+                if last_idx > 0:
+                    final_args = argparse.Namespace(**vars(args))
+                    final_args.start_frame = last_idx
+                    final_args.max_frames = 1
+                    final_args.output_name = f"{args.output_name}_final"
+                    original_ply = Path(args.ply_name)
+                    final_args.ply_name = f"{original_ply.stem}_final{original_ply.suffix}"
+                    final_args.metadata_filename = "colmap_export_final.json"
+                    final_stats = export_model(
+                        model_output=model_output, urdf_path=urdf_path, args=final_args
+                    )
+                    final_payload = asdict(final_stats)
+                    final_payload["status"] = "ok"
+                    final_payload["export"] = "final"
+                    final_payload["frame_index"] = last_idx
+                    results.append(final_payload)
+                    print(
+                        f"[OK] {model_output.name} (final frame {last_idx}): "
+                        f"images={final_stats.num_images}, points3D={final_stats.num_points3D}, "
+                        f"colmap={final_stats.colmap_dir}, ply={final_stats.pointcloud_ply}"
+                    )
         except Exception as exc:  # noqa: BLE001
             failed += 1
             results.append(

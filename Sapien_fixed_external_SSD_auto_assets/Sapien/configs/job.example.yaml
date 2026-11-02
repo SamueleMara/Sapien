@@ -1,0 +1,33 @@
+urdf_path: /data/assets/model.urdf
+joint_name: hinge_joint
+q_start: 0.0
+q_end: 1.57
+num_frames: 120
+# Alternative schedule mode:
+# fps: 30.0
+# duration_sec: 4.0
+
+camera_config_path: configs/camera_views.example.json
+output_dir: /data/output/demo
+
+joint_space: true
+root_pose:
+  position: [0.0, 0.0, 0.0]
+  quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
+
+image_width: null
+image_height: null
+default_near: null
+default_far: null
+
+save_depth_png: true
+save_depth_npy: true
+save_video: true
+video_fps: null
+video_codec: libx264
+
+mask_mode: articulation_ids
+background_color: [0.0, 0.0, 0.0]
+dry_run: false
+list_joints_only: false
+add_ground: false

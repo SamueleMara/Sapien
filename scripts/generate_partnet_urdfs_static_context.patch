@@ -1,0 +1,143 @@
+--- /mnt/data/generate_partnet_urdfs.py	2026-06-10 07:34:19.309860148 +0000
++++ /mnt/data/generate_partnet_urdfs_with_static_context.py	2026-06-10 07:45:58.915166801 +0000
+@@ -205,6 +205,23 @@
+         action="store_true",
+         help="Print actions without writing files.",
+     )
++    parser.add_argument(
++        "--include-result-static-meshes",
++        dest="include_result_static_meshes",
++        action="store_true",
++        default=True,
++        help=(
++            "Include OBJ meshes listed in result_after_merging.json/result.json but missing "
++            "from mobility.urdf as fixed base_link visuals. This keeps static/junk/other "
++            "context geometry such as the desktop/table in PartNet object 10211."
++        ),
++    )
++    parser.add_argument(
++        "--no-include-result-static-meshes",
++        dest="include_result_static_meshes",
++        action="store_false",
++        help="Keep the old behavior: only use visual meshes explicitly present in mobility.urdf.",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -758,6 +775,76 @@
+     return None
+ 
+ 
++def _normalize_result_obj_ref(obj_ref: str) -> str:
++    """Convert PartNet result.json obj tokens to mesh references."""
++    text = obj_ref.strip()
++    if not text:
++        return ""
++    text = text.replace("\\", "/")
++    name = Path(text).name
++    if not name.lower().endswith(".obj"):
++        name = f"{name}.obj"
++    return f"textured_objs/{name}"
++
++
++def _collect_result_obj_refs_from_node(node: Any, out: list[str]) -> None:
++    if not isinstance(node, dict):
++        return
++
++    objs = node.get("objs")
++    if isinstance(objs, list):
++        for obj in objs:
++            if isinstance(obj, str):
++                ref = _normalize_result_obj_ref(obj)
++                if ref:
++                    out.append(ref)
++
++    children = node.get("children")
++    if isinstance(children, list):
++        for child in children:
++            _collect_result_obj_refs_from_node(child, out)
++
++
++def load_result_static_mesh_paths(partnet_obj_dir: Path) -> list[Path]:
++    """Return all mesh paths listed by PartNet result files, preserving order.
++
++    PartNet-Mobility mobility.urdf can omit static/junk/other context geometry.
++    The point_sample files, however, are sampled from the full result tree. Reading
++    result_after_merging.json/result.json recovers those omitted OBJ files and
++    attaches them as fixed visuals.
++    """
++    refs: list[str] = []
++    for filename in ("result_after_merging.json", "result.json"):
++        path = partnet_obj_dir / filename
++        if not path.exists():
++            continue
++        try:
++            payload = json.loads(path.read_text(encoding="utf-8"))
++        except Exception:  # noqa: BLE001
++            continue
++
++        nodes = payload if isinstance(payload, list) else [payload]
++        for node in nodes:
++            _collect_result_obj_refs_from_node(node, refs)
++
++        if refs:
++            # Prefer result_after_merging.json when available and useful.
++            break
++
++    paths: list[Path] = []
++    seen: set[Path] = set()
++    for ref in refs:
++        mesh_path = resolve_mesh_path(partnet_obj_dir, ref)
++        if mesh_path is None:
++            continue
++        key = mesh_path.resolve()
++        if key in seen:
++            continue
++        seen.add(key)
++        paths.append(mesh_path)
++    return paths
++
++
+ def add_visual_mesh(
+     link_elem: ET.Element,
+     mesh_rel_path: str,
+@@ -1455,6 +1542,30 @@
+                         )
+                     )
+ 
++            result_static_mesh_count = 0
++            result_static_meshes: list[str] = []
++            if args.include_result_static_meshes:
++                used_mesh_paths = {
++                    visual.mesh_path.resolve()
++                    for visual in [*fixed_visuals, *moving_visuals]
++                }
++                for mesh_path in load_result_static_mesh_paths(partnet_obj_dir):
++                    key = mesh_path.resolve()
++                    if key in used_mesh_paths:
++                        continue
++                    used_mesh_paths.add(key)
++                    fixed_visuals.append(
++                        ResolvedVisual(
++                            source_link="result_static_extra",
++                            mesh_path=mesh_path,
++                            origin_xyz=(0.0, 0.0, 0.0),
++                            origin_rpy=(0.0, 0.0, 0.0),
++                            mesh_scale=None,
++                        )
++                    )
++                    result_static_mesh_count += 1
++                    result_static_meshes.append(mesh_path.name)
++
+             if not moving_visuals or not fixed_visuals:
+                 raise RuntimeError(
+                     f"Mesh split invalid (fixed={len(fixed_visuals)}, moving={len(moving_visuals)}). "
+@@ -1492,6 +1603,8 @@
+                     "moving_links": sorted(moving_links),
+                     "fixed_links": fixed_links,
+                     "unresolved_mesh_refs": unresolved,
++                    "result_static_mesh_count": result_static_mesh_count,
++                    "result_static_meshes": result_static_meshes,
+                     "canonical_root_pose": canonical_entry["root_pose"],
+                     "canonical_camera": canonical_entry["camera"],
+                     **build_info,

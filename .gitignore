@@ -25,3 +25,7 @@ outputs/
 *.tar
 *.tar.gz
 # END Joint3DGS split ignores
+
+# Local Docker mounts, often machine-specific
+.env
+.env.local

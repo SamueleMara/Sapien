@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -155,6 +156,62 @@ def write_frame_values_csv(
         writer.writerow(["frame_index", joint_name])
         for frame_idx, value in frame_values:
             writer.writerow([frame_idx, f"{value:.12g}"])
+
+
+def save_joint_trajectory_plot(
+    out_path: str | Path,
+    q_values: np.ndarray,
+    joint_name: str,
+) -> None:
+    try:
+        mpl_config_dir = Path("/tmp/matplotlib")
+        mpl_config_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(mpl_config_dir))
+
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "matplotlib is required to write joint_trajectory.png. "
+            "Install it with the project requirements."
+        ) from exc
+
+    p = Path(out_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    q = np.asarray(q_values, dtype=np.float64).reshape(-1)
+    frames = np.arange(q.shape[0], dtype=np.float64)
+
+    if q.shape[0] >= 2:
+        edge_order = 2 if q.shape[0] >= 3 else 1
+        velocity = np.gradient(q, edge_order=edge_order)
+        acceleration = np.gradient(velocity, edge_order=edge_order)
+    else:
+        velocity = np.zeros_like(q)
+        acceleration = np.zeros_like(q)
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True, constrained_layout=True)
+    fig.suptitle(f"Joint trajectory over frames: {joint_name}")
+
+    plots = [
+        (q, "Position", "q"),
+        (velocity, "Speed", "dq / frame"),
+        (acceleration, "Acceleration", "d²q / frame²"),
+    ]
+    colors = ["#0b7285", "#e67700", "#c2255c"]
+
+    for ax, color, (values, title, ylabel) in zip(axes, colors, plots):
+        ax.plot(frames, values, color=color, linewidth=2.0)
+        ax.scatter(frames, values, color=color, s=12)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+
+    axes[-1].set_xlabel("Frame index")
+    fig.savefig(p, dpi=160)
+    plt.close(fig)
 
 
 def get_package_versions(packages: list[str]) -> dict[str, str]:

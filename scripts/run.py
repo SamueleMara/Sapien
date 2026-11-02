@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,19 @@ NON_BLADE_ORBIT_AXIS_ROOT_POSE: dict[str, dict[str, Any]] = {
     },
 }
 
+VELOCITY_PROFILE_CHOICES = [
+    "linear",
+    "ease-in",
+    "ease-out",
+    "ease-in-out",
+    "trapezoid",
+]
+
+
+def normalize_velocity_profile(value: str) -> str:
+    """Accept profile names independent of case or underscore convention."""
+    return value.strip().lower().replace("_", "-")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch-run URDF preparation/render pipeline")
@@ -98,7 +112,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         default=None,
-        help="Root output folder for all URDF results. Default: <repo>/output/preparation_all",
+        help=(
+            "Explicit dataset output directory. If omitted, use the established "
+            "PartNet convention: /data/output/preparation_<N>cams/"
+            "partnet_subset_fixed_render_<velocity-profile> inside Docker (or the "
+            "same hierarchy under <repo>/output outside Docker)."
+        ),
     )
 
     parser.add_argument(
@@ -128,7 +147,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument("--num-cams", type=int, default=8)
+    parser.add_argument(
+        "--num-cams", type=int, default=8,
+        help=(
+            "Camera count. Presets: 8 -> cameras.PARIS.json; "
+            "64 -> cameras.hemisphere_64.json; "
+            "100 -> cameras.hemisphere_100.json. Other positive counts generate "
+            "a circular config (unless --camera-config-json is given)."
+        ),
+    )
     parser.add_argument("--radius", type=float, default=1.4)
     parser.add_argument("--height", type=float, default=0.7)
     parser.add_argument("--target", type=float, nargs=3, default=[0.0, 0.0, 0.3])
@@ -139,6 +166,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fov-y-deg", type=float, default=45.0)
 
     parser.add_argument("--num-frames", type=int, default=60)
+    parser.add_argument(
+        "--velocity-profile",
+        type=normalize_velocity_profile,
+        choices=VELOCITY_PROFILE_CHOICES,
+        default="linear",
+        help=(
+            "Joint-space trajectory used for ALL rendered frames. The COLMAP "
+            "exporter reuses the saved frame values for the final frame."
+        ),
+    )
+    parser.add_argument(
+        "--velocity-profile-accel-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of normalized motion time spent accelerating and decelerating for "
+            "--velocity-profile trapezoid. Ignored by other profiles."
+        ),
+    )
     parser.add_argument(
         "--joint-delta",
         type=float,
@@ -191,6 +237,18 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Force regeneration of --views-json even if that file already exists. "
             "By default, existing camera configs are reused."
+        ),
+    )
+    parser.add_argument(
+        "--rewrite", "--overwrite-existing",
+        dest="rewrite",
+        action="store_true",
+        help=(
+            "Force full rerender of every discovered URDF. Remove each existing "
+            "per-object output before regenerating RGB, depth, masks, videos, "
+            "COLMAP frame 0/final, and part PLYs. Other datasets and archives are "
+            "not touched. Without --rewrite, existing object folders are skipped. "
+            "Alias: --overwrite-existing (deprecated)."
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -257,8 +315,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--colmap-image-mode",
         choices=["symlink", "copy", "none"],
-        default="symlink",
-        help="How to populate colmap/images from rendered RGB frames.",
+        default="copy",
+        help="How to populate colmap/images from rendered RGB frames (copy is exFAT compatible).",
     )
     parser.add_argument(
         "--colmap-model-format",
@@ -275,6 +333,9 @@ def resolve_urdf_dir(arg_urdf_dir: str | None, repo_root: Path) -> Path:
         return Path(arg_urdf_dir).expanduser().resolve()
 
     candidates = [
+        Path("/data/assets/definitive_urdf/definitive_urdf"),
+        Path("/data/assets/urdf_collection/urdf_collection"),
+        Path("/data/assets"),
         Path("/workspace/assets/definitive_urdf/definitive_urdf"),
         Path("/workspace/assets/urdf_collection/urdf_collection"),
         Path("/workspace/assets"),
@@ -290,20 +351,48 @@ def resolve_urdf_dir(arg_urdf_dir: str | None, repo_root: Path) -> Path:
     return (repo_root / "assets").resolve()
 
 
-def resolve_output_root(arg_output_root: str | None, repo_root: Path) -> Path:
+def resolve_output_root(
+    arg_output_root: str | None,
+    repo_root: Path,
+    *,
+    num_cams: int = 8,
+    velocity_profile: str = "linear",
+) -> Path:
+    """Use the established profile-specific PartNet dataset names generically.
+
+    Always honor --output-root verbatim; only the default is constructed.
+    """
     if arg_output_root:
         return Path(arg_output_root).expanduser().resolve()
-    return (repo_root / "output" / "preparation_all").resolve()
+    container_output = Path("/data/output")
+    base = container_output if container_output.is_dir() else repo_root / "output"
+    return (
+        base / f"preparation_{num_cams}cams" /
+        f"partnet_subset_fixed_render_{velocity_profile}"
+    ).resolve()
 
 
-def resolve_views_json(arg_views_json: str | None, repo_root: Path) -> Path:
+CAMERA_PRESETS: dict[int, str] = {
+    8: "cameras.PARIS.json",
+    64: "cameras.hemisphere_64.json",
+    100: "cameras.hemisphere_100.json",
+}
+
+
+def resolve_views_json(
+    arg_views_json: str | None, repo_root: Path, num_cams: int = 8,
+) -> Path:
     if arg_views_json:
         return Path(arg_views_json).expanduser().resolve()
-    # Prefer the high-radius preset when present to avoid overly zoomed captures.
-    preferred = (repo_root / "configs" / "cameras.PARIS.json").resolve()
-    if preferred.exists():
-        return preferred
-    return (repo_root / "configs" / "cameras.pipeline.json").resolve()
+    filename = CAMERA_PRESETS.get(num_cams, f"cameras.generated_{num_cams}.json")
+    return (repo_root / "configs" / filename).resolve()
+
+
+def camera_config_is_hemisphere(camera_config_path: Path) -> bool:
+    """The shipped 64/100 presets must not be replaced by a circular override."""
+    return camera_config_path.name in {
+        CAMERA_PRESETS[64], CAMERA_PRESETS[100]
+    }
 
 
 def describe_camera_config(camera_config_path: Path) -> dict[str, Any]:
@@ -724,6 +813,8 @@ def build_mesh_search_roots(repo_root: Path, urdf_dir: Path) -> list[Path]:
     roots = [
         urdf_dir,
         urdf_dir.parent,
+        Path("/data/assets"),
+        Path("/data/assets/definitive_urdf"),
         repo_root,
         repo_root / "assets",
         repo_root / "assets" / "sapien_unified",
@@ -946,6 +1037,12 @@ def prepare_runtime_urdf(
 def main() -> int:
     args = parse_args()
 
+    if args.num_cams < 1:
+        raise ValueError("--num-cams must be >= 1")
+    if args.num_frames < 2:
+        raise ValueError("--num-frames must be >= 2 for endpoint export")
+    if args.camera_config_json and args.views_json:
+        raise ValueError("Use either --camera-config-json or --views-json, not both")
     if args.colmap_sample_stride < 1:
         raise ValueError("--colmap-sample-stride must be >= 1")
     if args.colmap_max_points_per_image < 0:
@@ -956,7 +1053,8 @@ def main() -> int:
         raise ValueError("--colmap-max-frames must be >= 0 when provided")
     if args.joint_delta is not None and not math.isfinite(float(args.joint_delta)):
         raise ValueError("--joint-delta must be a finite float")
-
+    if not (0.0 < float(args.velocity_profile_accel_fraction) <= 0.5):
+        raise ValueError("--velocity-profile-accel-fraction must be in (0, 0.5]")
     if args.urdf_dir and args.assets_dir:
         p1 = Path(args.urdf_dir).expanduser().resolve()
         p2 = Path(args.assets_dir).expanduser().resolve()
@@ -972,10 +1070,15 @@ def main() -> int:
     repo_root = script_path.parents[1]
 
     urdf_dir = resolve_urdf_dir(selected_urdf_arg, repo_root)
-    output_root = resolve_output_root(args.output_root, repo_root)
+    output_root = resolve_output_root(
+        args.output_root, repo_root,
+        num_cams=args.num_cams,
+        velocity_profile=args.velocity_profile,
+    )
 
-    # --views-json is generation output target.
-    views_json = resolve_views_json(args.views_json, repo_root)
+    # --views-json is a legacy explicit config/output path. The --num-cams
+    # default selects the right shipped camera preset without regenerating it.
+    views_json = resolve_views_json(args.views_json, repo_root, args.num_cams)
 
     # --camera-config-json is explicit input camera file.
     camera_config_input: Path | None = None
@@ -1024,6 +1127,8 @@ def main() -> int:
     camera_config_path: Path
 
     if camera_config_input is not None:
+        if args.regenerate_camera_config:
+            raise ValueError("Cannot regenerate an explicit --camera-config-json")
         camera_config_path = camera_config_input
         if not args.dry_run and not camera_config_path.exists():
             raise FileNotFoundError(
@@ -1033,6 +1138,12 @@ def main() -> int:
     else:
         camera_config_path = views_json
         if args.regenerate_camera_config:
+            if not args.views_json and args.num_cams in CAMERA_PRESETS:
+                raise ValueError(
+                    "Refusing to overwrite a shipped camera preset with generated "
+                    "circular cameras. Pass a new --views-json path if regeneration "
+                    "is intended."
+                )
             should_generate_camera = True
         elif args.skip_camera_generation:
             if not args.dry_run and not camera_config_path.exists():
@@ -1040,6 +1151,11 @@ def main() -> int:
                     f"--skip-camera-generation was used, but camera config was not found: {camera_config_path}"
                 )
         elif not camera_config_path.exists():
+            if args.views_json is None and args.num_cams in CAMERA_PRESETS:
+                raise FileNotFoundError(
+                    f"Shipped {args.num_cams}-camera config missing: "
+                    f"{camera_config_path}. Reinstall configs/ from the repository."
+                )
             should_generate_camera = True
 
     if should_generate_camera:
@@ -1088,6 +1204,23 @@ def main() -> int:
             f"Camera config stats: num_cameras={cam_count}, "
             f"cam0_distance_to_target={cam0_dist}, cam0_distance_origin={cam0_dist_origin}"
         )
+    if not args.dry_run or camera_config_path.exists():
+        if not camera_config_path.exists():
+            raise FileNotFoundError(f"Camera config not found: {camera_config_path}")
+        if "parse_error" in camera_cfg_info:
+            raise ValueError(f"Invalid camera config: {camera_cfg_info['parse_error']}")
+        if cam_count != args.num_cams:
+            raise ValueError(
+                f"--num-cams {args.num_cams} does not match the {cam_count} "
+                f"cameras in {camera_config_path}"
+            )
+    if camera_config_is_hemisphere(camera_config_path):
+        print("Hemisphere camera preset selected: per-model circular camera "
+              "overrides will be disabled to preserve the hemisphere.")
+    elif canonical_manifest_path is not None and args.use_canonical_camera:
+        print("Canonical manifest camera override is ON: per-model 8-camera ring "
+              "geometry may differ from the preset. Use "
+              "--no-use-canonical-camera for exact JSON camera poses.")
 
     urdf_files = discover_urdfs(urdf_dir)
     if not urdf_files:
@@ -1123,6 +1256,9 @@ def main() -> int:
         "colmap_image_mode": args.colmap_image_mode,
         "colmap_model_format": args.colmap_model_format,
         "output_root": str(output_root),
+        "num_cams_requested": args.num_cams,
+        "velocity_profile": args.velocity_profile,
+        "rewrite": bool(args.rewrite),
         "num_urdfs": len(urdf_files),
         "results": [],
     }
@@ -1154,6 +1290,12 @@ def main() -> int:
         if root_pose_override is not None:
             item["root_pose_override"] = root_pose_override
             item["root_pose_override_source"] = root_pose_source
+
+        if model_output.exists() and not args.rewrite:
+            item["status"] = "skipped_existing"
+            print(f"[SKIPPED existing] {model_output} (use --rewrite to replace)")
+            summary["results"].append(item)
+            continue
 
         try:
             with tempfile.TemporaryDirectory(prefix="run_pipeline_urdf_") as tmp_dir_str:
@@ -1187,6 +1329,7 @@ def main() -> int:
                     and args.use_canonical_camera
                     and isinstance(canonical_entry.get("camera"), dict)
                     and base_camera_defaults is not None
+                    and not camera_config_is_hemisphere(camera_config_path)
                 ):
                     camera_config_for_model = build_per_model_camera_config(
                         camera_gen=camera_gen,
@@ -1240,6 +1383,8 @@ def main() -> int:
                     item["joint_delta_requested"] = args.joint_delta
                     item["joint_delta_applied"] = q_end - q_start
                     item["joint_delta_source"] = "cli" if args.joint_delta is not None else "auto"
+                    item["velocity_profile"] = args.velocity_profile
+                    item["velocity_profile_accel_fraction"] = args.velocity_profile_accel_fraction
 
                     render_cmd = [
                         sys.executable,
@@ -1255,6 +1400,10 @@ def main() -> int:
                         str(q_end),
                         "--num-frames",
                         str(args.num_frames),
+                        "--velocity-profile",
+                        str(args.velocity_profile),
+                        "--velocity-profile-accel-fraction",
+                        str(args.velocity_profile_accel_fraction),
                         "--views-json",
                         str(camera_config_for_model),
                         "--output-dir",
@@ -1279,6 +1428,17 @@ def main() -> int:
                     if args.save_video:
                         render_cmd.append("--save-video")
 
+                    if args.rewrite and model_output.exists():
+                        # Never delete the dataset root, paths outside it, or
+                        # symlinked directories. This flag is intentionally explicit.
+                        if model_output.is_symlink() or not model_output.is_dir():
+                            raise RuntimeError(f"Unsafe existing model output: {model_output}")
+                        if model_output.parent.resolve() != output_root.resolve():
+                            raise RuntimeError(
+                                f"Refusing to overwrite outside output root: {model_output}"
+                            )
+                        print(f"[OVERWRITE] Removing previous model dataset: {model_output}")
+                        shutil.rmtree(model_output)
                     run_command(render_cmd, dry_run=False)
                     if args.export_colmap:
                         export_cmd = [
@@ -1324,7 +1484,10 @@ def main() -> int:
         print(f"\nSummary written to: {summary_path}")
 
     ok_count = sum(1 for r in summary["results"] if r.get("status") == "ok")
-    skipped_count = sum(1 for r in summary["results"] if r.get("status") == "skipped_no_1dof")
+    skipped_count = sum(
+        1 for r in summary["results"]
+        if r.get("status") in {"skipped_no_1dof", "skipped_existing"}
+    )
     fail_count = len(summary["results"]) - ok_count - skipped_count
     print(
         f"\nDone. total={len(summary['results'])}, ok={ok_count}, skipped_no_1dof={skipped_count}, failed={fail_count}"

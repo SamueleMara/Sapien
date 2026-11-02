@@ -75,6 +75,14 @@ NON_BLADE_ORBIT_AXIS_ROOT_POSE: dict[str, dict[str, Any]] = {
     },
 }
 
+VELOCITY_PROFILE_CHOICES = [
+    "linear",
+    "ease-in",
+    "ease-out",
+    "ease-in-out",
+    "trapezoid",
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Batch-run URDF preparation/render pipeline")
@@ -139,6 +147,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fov-y-deg", type=float, default=45.0)
 
     parser.add_argument("--num-frames", type=int, default=60)
+    parser.add_argument(
+        "--velocity-profile",
+        choices=VELOCITY_PROFILE_CHOICES,
+        default="linear",
+        help=(
+            "Joint-space velocity profile for the dynamic render. "
+            "COLMAP export is unchanged and remains tied to q_start/q_end only."
+        ),
+    )
+    parser.add_argument(
+        "--velocity-profile-accel-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of normalized motion time spent accelerating and decelerating for "
+            "--velocity-profile trapezoid. Ignored by other profiles."
+        ),
+    )
     parser.add_argument(
         "--joint-delta",
         type=float,
@@ -956,6 +982,17 @@ def main() -> int:
         raise ValueError("--colmap-max-frames must be >= 0 when provided")
     if args.joint_delta is not None and not math.isfinite(float(args.joint_delta)):
         raise ValueError("--joint-delta must be a finite float")
+    if not (0.0 < float(args.velocity_profile_accel_fraction) <= 0.5):
+        raise ValueError("--velocity-profile-accel-fraction must be in (0, 0.5]")
+    if (
+        args.export_colmap
+        and args.velocity_profile != "linear"
+        and (args.colmap_max_frames == 0 or (args.colmap_max_frames is not None and args.colmap_max_frames > 1))
+    ):
+        print(
+            "[WARN] Non-linear --velocity-profile affects rendered frames only. "
+            "COLMAP export remains linear in q and will diverge for exported frames after frame_000000."
+        )
 
     if args.urdf_dir and args.assets_dir:
         p1 = Path(args.urdf_dir).expanduser().resolve()
@@ -1240,6 +1277,8 @@ def main() -> int:
                     item["joint_delta_requested"] = args.joint_delta
                     item["joint_delta_applied"] = q_end - q_start
                     item["joint_delta_source"] = "cli" if args.joint_delta is not None else "auto"
+                    item["velocity_profile"] = args.velocity_profile
+                    item["velocity_profile_accel_fraction"] = args.velocity_profile_accel_fraction
 
                     render_cmd = [
                         sys.executable,
@@ -1255,6 +1294,10 @@ def main() -> int:
                         str(q_end),
                         "--num-frames",
                         str(args.num_frames),
+                        "--velocity-profile",
+                        str(args.velocity_profile),
+                        "--velocity-profile-accel-fraction",
+                        str(args.velocity_profile_accel_fraction),
                         "--views-json",
                         str(camera_config_for_model),
                         "--output-dir",

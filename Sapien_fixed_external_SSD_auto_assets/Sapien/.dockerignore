@@ -1,0 +1,26 @@
+# Only code and container dependencies are needed in Docker build context.
+.git
+.codex
+.env
+.env.local
+.env.*
+assets/
+input/
+inputs/
+output/
+outputs/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+*.zip
+*.tar
+*.tar.gz
+*.pt
+*.pth
+*.ckpt
+*.mp4
+*.npy
+*.npz

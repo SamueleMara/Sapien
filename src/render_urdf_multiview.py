@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from camera_utils import load_camera_specs
-from config_types import CameraSpec, RenderJobConfig, RootPoseSpec
+from config_types import CameraSpec, RenderJobConfig, RootPoseSpec, VELOCITY_PROFILE_CHOICES
 from io_utils import load_json_or_yaml
 from sapien_urdf_renderer import SapienURDFRenderer
 
@@ -73,6 +73,8 @@ def _build_job_config_from_render_args(args: argparse.Namespace) -> RenderJobCon
         num_frames=args.num_frames,
         fps=args.fps,
         duration_sec=args.duration_sec,
+        velocity_profile=args.velocity_profile,
+        velocity_profile_accel_fraction=args.velocity_profile_accel_fraction,
         cameras=cameras,
         output_dir=args.output_dir,
         root_pose=root_pose,
@@ -207,6 +209,21 @@ def build_parser() -> argparse.ArgumentParser:
     render.add_argument("--num-frames", type=int, default=None, help="Number of frames (inclusive endpoints)")
     render.add_argument("--fps", type=float, default=None, help="FPS (used with --duration-sec)")
     render.add_argument("--duration-sec", type=float, default=None, help="Duration in seconds")
+    render.add_argument(
+        "--velocity-profile",
+        choices=VELOCITY_PROFILE_CHOICES,
+        default="linear",
+        help="Joint-space velocity profile used to sample q values across frames.",
+    )
+    render.add_argument(
+        "--velocity-profile-accel-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of normalized motion time spent accelerating and decelerating for "
+            "--velocity-profile trapezoid. Ignored by other profiles."
+        ),
+    )
     render.add_argument("--views-json", required=True, help="Camera definitions file (.json/.yaml/.yml)")
     render.add_argument("--output-dir", required=True, help="Output directory")
     render.add_argument("--image-width", type=int, default=None, help="Optional width override for all cameras")

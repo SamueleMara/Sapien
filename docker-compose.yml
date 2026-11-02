@@ -14,9 +14,19 @@ services:
     tty: true
     stdin_open: true
     volumes:
-      - ./:/workspace
-      - ${ASSETS_DIR:-./assets}:/data/assets
-      - ${OUTPUT_DIR:-./output}:/data/output
+      - type: bind
+        source: .
+        target: /workspace
+      - type: bind
+        source: ${ASSETS_DIR:-./assets}
+        target: /data/assets
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OUTPUT_DIR:-./output}
+        target: /data/output
+        bind:
+          create_host_path: false
     command: ["bash"]
 
   renderer-gui:
@@ -36,8 +46,18 @@ services:
     tty: true
     stdin_open: true
     volumes:
-      - ./:/workspace
-      - ${ASSETS_DIR:-./assets}:/data/assets
-      - ${OUTPUT_DIR:-./output}:/data/output
+      - type: bind
+        source: .
+        target: /workspace
+      - type: bind
+        source: ${ASSETS_DIR:-./assets}
+        target: /data/assets
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OUTPUT_DIR:-./output}
+        target: /data/output
+        bind:
+          create_host_path: false
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     command: ["bash"]

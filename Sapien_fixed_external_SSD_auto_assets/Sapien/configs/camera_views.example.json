@@ -1,0 +1,26 @@
+{
+  "cameras": [
+    {
+      "name": "cam_front",
+      "width": 640,
+      "height": 480,
+      "fov_y_deg": 45.0,
+      "near": 0.01,
+      "far": 10.0,
+      "position": [1.2, 0.0, 0.8],
+      "target": [0.0, 0.0, 0.3],
+      "up": [0.0, 0.0, 1.0]
+    },
+    {
+      "name": "cam_side",
+      "width": 640,
+      "height": 480,
+      "fov_y_deg": 45.0,
+      "near": 0.01,
+      "far": 10.0,
+      "position": [0.0, 1.2, 0.8],
+      "target": [0.0, 0.0, 0.3],
+      "up": [0.0, 0.0, 1.0]
+    }
+  ]
+}

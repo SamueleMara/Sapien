@@ -1,0 +1,153 @@
+--- /mnt/data/run.py	2026-06-10 07:34:19.339325105 +0000
++++ /mnt/data/run_with_joint_delta.py	2026-06-10 07:41:54.894936157 +0000
+@@ -139,6 +139,17 @@
+     parser.add_argument("--fov-y-deg", type=float, default=45.0)
+ 
+     parser.add_argument("--num-frames", type=int, default=60)
++    parser.add_argument(
++        "--joint-delta",
++        type=float,
++        default=None,
++        help=(
++            "Optional final joint displacement relative to the automatically selected q_start. "
++            "When omitted, keep the existing automatic q_end selection. Example: "
++            "--joint-delta -0.35 renders from q_start to q_start-0.35. "
++            "The resulting q_end is clamped to finite joint limits when available."
++        ),
++    )
+     parser.add_argument("--save-video", action="store_true")
+     parser.add_argument(
+         "--use-canonical-root-pose",
+@@ -619,7 +630,27 @@
+     return proc
+ 
+ 
+-def choose_joint_and_range(joints: list[dict[str, Any]]) -> tuple[str, float, float]:
++def _joint_limit_pair(joint: dict[str, Any]) -> tuple[float, float] | None:
++    limits = joint.get("limits")
++    if not (
++        isinstance(limits, list)
++        and limits
++        and isinstance(limits[0], list)
++        and len(limits[0]) == 2
++    ):
++        return None
++
++    lo = float(limits[0][0])
++    hi = float(limits[0][1])
++    if not (math.isfinite(lo) and math.isfinite(hi) and hi > lo):
++        return None
++    return lo, hi
++
++
++def choose_joint_and_range(
++    joints: list[dict[str, Any]],
++    joint_delta: float | None = None,
++) -> tuple[str, float, float]:
+     candidates = [j for j in joints if int(j.get("dof", 0)) == 1]
+     if not candidates:
+         raise RuntimeError("No 1-DoF active joints found")
+@@ -630,31 +661,39 @@
+     q_start = -0.5
+     q_end = 0.5
+ 
+-    limits = joint.get("limits")
+-    if isinstance(limits, list) and limits and isinstance(limits[0], list) and len(limits[0]) == 2:
+-        lo = float(limits[0][0])
+-        hi = float(limits[0][1])
+-        if math.isfinite(lo) and math.isfinite(hi) and hi > lo:
+-            span = hi - lo
+-            margin = 0.05 * span
+-            lo_inner = lo + margin
+-            hi_inner = hi - margin
+-            if hi_inner <= lo_inner:
+-                lo_inner = lo
+-                hi_inner = hi
+-
+-            # Prefer the articulation's neutral q=0 pose when it is valid so frame_000000
+-            # stays close to the canonical PartNet object state instead of an extreme limit.
+-            if lo <= 0.0 <= hi:
+-                q_start = 0.0
+-                left_span = abs(q_start - lo_inner)
+-                right_span = abs(hi_inner - q_start)
+-                q_end = lo_inner if left_span >= right_span else hi_inner
+-                if math.isclose(q_end, q_start):
+-                    q_end = hi_inner if not math.isclose(hi_inner, q_start) else lo_inner
+-            else:
+-                q_start = lo_inner
+-                q_end = hi_inner
++    limit_pair = _joint_limit_pair(joint)
++    if limit_pair is not None:
++        lo, hi = limit_pair
++        span = hi - lo
++        margin = 0.05 * span
++        lo_inner = lo + margin
++        hi_inner = hi - margin
++        if hi_inner <= lo_inner:
++            lo_inner = lo
++            hi_inner = hi
++
++        # Prefer the articulation's neutral q=0 pose when it is valid so frame_000000
++        # stays close to the canonical PartNet object state instead of an extreme limit.
++        if lo <= 0.0 <= hi:
++            q_start = 0.0
++            left_span = abs(q_start - lo_inner)
++            right_span = abs(hi_inner - q_start)
++            q_end = lo_inner if left_span >= right_span else hi_inner
++            if math.isclose(q_end, q_start):
++                q_end = hi_inner if not math.isclose(hi_inner, q_start) else lo_inner
++        else:
++            q_start = lo_inner
++            q_end = hi_inner
++
++    if joint_delta is not None:
++        if not math.isfinite(float(joint_delta)):
++            raise ValueError("--joint-delta must be a finite float")
++        requested_q_end = q_start + float(joint_delta)
++        if limit_pair is not None:
++            lo, hi = limit_pair
++            q_end = min(max(requested_q_end, lo), hi)
++        else:
++            q_end = requested_q_end
+ 
+     return name, q_start, q_end
+ 
+@@ -915,6 +954,8 @@
+         raise ValueError("--colmap-frame-step must be >= 1")
+     if args.colmap_max_frames is not None and args.colmap_max_frames < 0:
+         raise ValueError("--colmap-max-frames must be >= 0 when provided")
++    if args.joint_delta is not None and not math.isfinite(float(args.joint_delta)):
++        raise ValueError("--joint-delta must be a finite float")
+ 
+     if args.urdf_dir and args.assets_dir:
+         p1 = Path(args.urdf_dir).expanduser().resolve()
+@@ -1073,6 +1114,7 @@
+         "camera_config_stats": camera_cfg_info,
+         "object_view_profile": args.object_view_profile,
+         "non_blade_orbit_axis": args.non_blade_orbit_axis,
++        "joint_delta_cli": args.joint_delta,
+         "export_colmap": bool(args.export_colmap),
+         "colmap_sample_stride": args.colmap_sample_stride,
+         "colmap_max_points_per_image": args.colmap_max_points_per_image,
+@@ -1179,7 +1221,10 @@
+                     joints = parse_joints_from_cli_output(list_proc.stdout)
+ 
+                     try:
+-                        joint_name, q_start, q_end = choose_joint_and_range(joints)
++                        joint_name, q_start, q_end = choose_joint_and_range(
++                            joints,
++                            joint_delta=args.joint_delta,
++                        )
+                     except RuntimeError as exc:
+                         if "No 1-DoF active joints found" in str(exc):
+                             item["status"] = "skipped_no_1dof"
+@@ -1192,6 +1237,9 @@
+                     item["joint_name"] = joint_name
+                     item["q_start"] = q_start
+                     item["q_end"] = q_end
++                    item["joint_delta_requested"] = args.joint_delta
++                    item["joint_delta_applied"] = q_end - q_start
++                    item["joint_delta_source"] = "cli" if args.joint_delta is not None else "auto"
+ 
+                     render_cmd = [
+                         sys.executable,

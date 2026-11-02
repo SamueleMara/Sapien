@@ -17,6 +17,7 @@ from io_utils import (
     get_package_versions,
     save_depth_npy,
     save_depth_png_preview,
+    save_joint_trajectory_plot,
     save_mask_png,
     save_rgb_png,
     write_frame_values_csv,
@@ -43,6 +44,56 @@ else:
 
 class RenderInitializationError(RuntimeError):
     """Raised when SAPIEN renderer cannot initialize."""
+
+
+def _trapezoid_progress(samples: np.ndarray, accel_fraction: float) -> np.ndarray:
+    accel = float(accel_fraction)
+    vmax = 1.0 / (1.0 - accel)
+
+    progress = np.empty_like(samples, dtype=np.float64)
+
+    accel_mask = samples <= accel
+    cruise_mask = (samples > accel) & (samples < (1.0 - accel))
+    decel_mask = ~(accel_mask | cruise_mask)
+
+    progress[accel_mask] = 0.5 * (vmax / accel) * np.square(samples[accel_mask])
+    progress[cruise_mask] = vmax * (samples[cruise_mask] - 0.5 * accel)
+
+    remaining = 1.0 - samples[decel_mask]
+    progress[decel_mask] = 1.0 - 0.5 * (vmax / accel) * np.square(remaining)
+
+    progress[0] = 0.0
+    progress[-1] = 1.0
+    return np.clip(progress, 0.0, 1.0)
+
+
+def _sample_joint_trajectory(cfg: RenderJobConfig) -> np.ndarray:
+    num_frames = cfg.resolved_num_frames()
+    if num_frames < 2:
+        raise ConfigValidationError("num_frames must be >= 2 to sample a trajectory")
+
+    samples = np.linspace(0.0, 1.0, num_frames, dtype=np.float64)
+    profile = cfg.velocity_profile
+
+    if profile == "linear":
+        progress = samples
+    elif profile == "ease-in":
+        progress = np.square(samples)
+    elif profile == "ease-out":
+        progress = 1.0 - np.square(1.0 - samples)
+    elif profile == "ease-in-out":
+        progress = 0.5 - 0.5 * np.cos(np.pi * samples)
+    elif profile == "trapezoid":
+        progress = _trapezoid_progress(samples, cfg.velocity_profile_accel_fraction)
+    else:
+        raise ConfigValidationError(f"Unsupported velocity_profile: {profile}")
+
+    q_start = float(cfg.q_start)
+    q_end = float(cfg.q_end)
+    q_values = q_start + (q_end - q_start) * progress
+    q_values[0] = q_start
+    q_values[-1] = q_end
+    return q_values
 
 
 class SapienURDFRenderer:
@@ -911,8 +962,8 @@ class SapienURDFRenderer:
         self.load_articulation(str(urdf_path), root_pose=cfg.root_pose)
         joint_info = self._validate_joint_for_rendering(cfg.joint_name)
 
-        num_frames = cfg.resolved_num_frames()
-        q_values = np.linspace(float(cfg.q_start), float(cfg.q_end), num_frames, dtype=np.float64)
+        q_values = _sample_joint_trajectory(cfg)
+        num_frames = int(q_values.shape[0])
 
         camera_names = [cam.name for cam in cfg.cameras]
         dirs = ensure_output_layout(
@@ -927,10 +978,15 @@ class SapienURDFRenderer:
         resolved_cfg["urdf_path"] = str(urdf_path)
         resolved_cfg["output_dir"] = str(cfg.resolved_output_dir())
         resolved_cfg["num_frames_resolved"] = num_frames
+        fps_resolved = float(cfg.resolved_video_fps())
+        resolved_cfg["fps_resolved"] = fps_resolved
 
         metadata_dir = dirs["metadata"]
         write_yaml(resolved_cfg, metadata_dir / "job_config_resolved.yaml")
-        write_json({"cameras": [cam.to_dict() for cam in cfg.cameras]}, metadata_dir / "cameras.json")
+        write_json({"fps": fps_resolved, "fps_source": "resolved_video_fps", "cameras": [cam.to_dict() for cam in cfg.cameras]}, metadata_dir / "cameras.json")
+        write_json({"fps": fps_resolved, "fps_source": "resolved_video_fps",
+                    "num_frames": num_frames, "frame_interval_s": 1.0 / fps_resolved},
+                   metadata_dir / "timing.json")
         write_json(
             {
                 "selected_joint": joint_info,
@@ -945,6 +1001,7 @@ class SapienURDFRenderer:
         write_json(material_report, metadata_dir / "visual_materials.json")
         frame_values = [(idx, float(v)) for idx, v in enumerate(q_values)]
         write_frame_values_csv(metadata_dir / "frame_values.csv", frame_values, cfg.joint_name)
+        save_joint_trajectory_plot(metadata_dir / "joint_trajectory.png", q_values, cfg.joint_name)
 
         package_versions = get_package_versions(
             [
@@ -952,6 +1009,7 @@ class SapienURDFRenderer:
                 "numpy",
                 "imageio",
                 "imageio-ffmpeg",
+                "matplotlib",
                 "opencv-python-headless",
                 "Pillow",
                 "PyYAML",
