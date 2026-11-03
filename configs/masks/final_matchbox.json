@@ -1,0 +1,139 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Spatial mask correction for final_matchbox; 640x480 fixed calibrated views. Separate from other recordings.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        225,
+        298,
+        410,
+        338
+      ],
+      "positive": [
+        [
+          355,
+          320
+        ],
+        [
+          385,
+          325
+        ]
+      ],
+      "negative": [
+        [
+          350,
+          350
+        ],
+        [
+          200,
+          315
+        ],
+        [
+          244,
+          335
+        ],
+        [
+          300,
+          340
+        ]
+      ],
+      "crop": [
+        210,
+        280,
+        430,
+        360
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        450,
+        218,
+        505,
+        290
+      ],
+      "positive": [
+        [
+          474,
+          240
+        ],
+        [
+          482,
+          240
+        ]
+      ],
+      "negative": [
+        [
+          440,
+          265
+        ],
+        [
+          510,
+          260
+        ],
+        [
+          490,
+          330
+        ],
+        [
+          478,
+          285
+        ]
+      ],
+      "crop": [
+        430,
+        200,
+        525,
+        310
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        370,
+        215,
+        450,
+        260
+      ],
+      "positive": [
+        [
+          396,
+          233
+        ],
+        [
+          405,
+          232
+        ]
+      ],
+      "negative": [
+        [
+          360,
+          255
+        ],
+        [
+          440,
+          270
+        ]
+      ],
+      "crop": [
+        345,
+        195,
+        470,
+        280
+      ]
+    }
+  },
+  "robot_state_guidance": true,
+  "refinement_passes": 1,
+  "robot_offset_max_m": 0.09
+}

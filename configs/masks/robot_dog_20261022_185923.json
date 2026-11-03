@@ -1,0 +1,122 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Fixed-camera robot dog recording at 640x480. Positive points mark the dog's body; negative points mark the separate manipulator. Inspect previews before a full run.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        155,
+        205,
+        460,
+        480
+      ],
+      "positive": [
+        [
+          295,
+          305
+        ],
+        [
+          280,
+          260
+        ]
+      ],
+      "negative": [
+        [
+          50,
+          170
+        ],
+        [
+          30,
+          440
+        ],
+        [
+          145,
+          280
+        ]
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        230,
+        195,
+        580,
+        395
+      ],
+      "positive": [
+        [
+          390,
+          250
+        ],
+        [
+          345,
+          240
+        ]
+      ],
+      "negative": [
+        [
+          600,
+          250
+        ],
+        [
+          455,
+          405
+        ]
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        160,
+        175,
+        540,
+        410
+      ],
+      "positive": [
+        [
+          350,
+          245
+        ],
+        [
+          280,
+          245
+        ]
+      ],
+      "negative": [
+        [
+          600,
+          130
+        ],
+        [
+          620,
+          435
+        ],
+        [
+          535,
+          390
+        ],
+        [
+          520,
+          360
+        ],
+        [
+          500,
+          370
+        ],
+        [
+          520,
+          385
+        ]
+      ]
+    }
+  }
+}

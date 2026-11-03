@@ -1,0 +1,124 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Spatial mask correction for final_robot_dog; 640x480 fixed calibrated views. Separate from other recordings.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        200,
+        150,
+        490,
+        430
+      ],
+      "positive": [
+        [
+          350,
+          240
+        ],
+        [
+          325,
+          200
+        ],
+        [
+          270,
+          300
+        ]
+      ],
+      "negative": [
+        [
+          350,
+          350
+        ],
+        [
+          70,
+          200
+        ]
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        205,
+        130,
+        520,
+        330
+      ],
+      "positive": [
+        [
+          350,
+          200
+        ],
+        [
+          290,
+          180
+        ]
+      ],
+      "negative": [
+        [
+          350,
+          345
+        ],
+        [
+          570,
+          350
+        ],
+        [
+          330,
+          390
+        ]
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        110,
+        115,
+        455,
+        360
+      ],
+      "positive": [
+        [
+          300,
+          195
+        ],
+        [
+          245,
+          190
+        ],
+        [
+          240,
+          300
+        ]
+      ],
+      "negative": [
+        [
+          270,
+          345
+        ],
+        [
+          550,
+          350
+        ],
+        [
+          580,
+          130
+        ],
+        [
+          440,
+          330
+        ]
+      ]
+    }
+  },
+  "robot_state_guidance": false,
+  "refinement_passes": 1
+}

@@ -1,0 +1,29 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Older black case recording on tabletop: retain body and opening lid. Separate geometry from final_black_box on cardboard supports.",
+  "robot_state_guidance": false,
+  "refinement_passes": 1,
+  "cameras": {
+    "cam_000": {
+      "image_size": [640, 480],
+      "box": [270, 190, 465, 445],
+      "crop": [255, 175, 485, 465],
+      "positive": [[340, 400], [410, 405], [430, 330]],
+      "negative": [[350, 460], [480, 400], [250, 330], [290, 230]]
+    },
+    "cam_001": {
+      "image_size": [640, 480],
+      "box": [320, 180, 475, 355],
+      "crop": [0, 0, 640, 480],
+      "positive": [[350, 320], [365, 310]],
+      "negative": [[370, 370], [490, 330], [310, 300], [500, 350], [450, 400]]
+    },
+    "cam_002": {
+      "image_size": [640, 480],
+      "box": [240, 170, 420, 365],
+      "crop": [220, 155, 445, 390],
+      "positive": [[285, 320], [330, 320]],
+      "negative": [[300, 385], [435, 330], [230, 300]]
+    }
+  }
+}

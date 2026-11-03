@@ -1,0 +1,112 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Spatial mask correction for laptop_20261021_161154; 640x480 fixed calibrated views. Separate from other recordings.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        210,
+        230,
+        415,
+        470
+      ],
+      "positive": [
+        [
+          300,
+          420
+        ],
+        [
+          365,
+          430
+        ]
+      ],
+      "negative": [
+        [
+          250,
+          475
+        ],
+        [
+          380,
+          220
+        ]
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        310,
+        200,
+        520,
+        400
+      ],
+      "positive": [
+        [
+          410,
+          360
+        ],
+        [
+          370,
+          355
+        ]
+      ],
+      "negative": [
+        [
+          540,
+          375
+        ],
+        [
+          300,
+          350
+        ]
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        250,
+        200,
+        485,
+        440
+      ],
+      "positive": [
+        [
+          360,
+          380
+        ],
+        [
+          375,
+          375
+        ]
+      ],
+      "negative": [
+        [
+          500,
+          350
+        ],
+        [
+          320,
+          450
+        ],
+        [
+          330,
+          420
+        ],
+        [
+          260,
+          370
+        ]
+      ]
+    }
+  },
+  "robot_state_guidance": true,
+  "refinement_passes": 1
+}

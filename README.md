@@ -389,8 +389,11 @@ to synthetic SAPIEN rendering.
 Geometry/export commands below use host Python with NumPy, SciPy, OpenCV,
 Pillow and PyYAML installed. Only mask inference uses `grounded-sam2`.
 
-The conversion and mask tools currently live in
-`/home/samuelemara/FreeArtGS/samuele/`; the commands use their absolute paths.
+The native conversion tools currently live in
+`/home/samuelemara/FreeArtGS/samuele/`. Mask generation and correction tools
+are also available in this repository under `samuele/`, with the reviewed
+profiles under `configs/masks/`. See [mask correction commands](docs/real_mask_corrections.md)
+for correcting existing real datasets without reconversion.
 The required environments and local Grounded-SAM-2 weights must already be
 installed. Run the following steps manually in the same terminal.
 
@@ -446,7 +449,7 @@ Switch to the segmentation environment explicitly:
 ```bash
 conda activate grounded-sam2
 
-python -B /home/samuelemara/FreeArtGS/samuele/create_standard_masks.py \
+python -B /home/samuelemara/Joint3DGS/Sapien/samuele/create_standard_masks.py \
   --input "$REAL_OUTPUT" \
   --prompt "$MASK_PROMPT" \
   --device cuda

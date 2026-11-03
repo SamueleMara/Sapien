@@ -1,0 +1,120 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Spatial mask correction for final_black_laptop; 640x480 fixed calibrated views. Separate from other recordings.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        75,
+        180,
+        340,
+        455
+      ],
+      "positive": [
+        [
+          200,
+          410
+        ],
+        [
+          260,
+          410
+        ]
+      ],
+      "negative": [
+        [
+          200,
+          465
+        ],
+        [
+          300,
+          160
+        ]
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        335,
+        210,
+        605,
+        405
+      ],
+      "positive": [
+        [
+          420,
+          350
+        ],
+        [
+          530,
+          350
+        ]
+      ],
+      "negative": [
+        [
+          440,
+          425
+        ],
+        [
+          500,
+          150
+        ],
+        [
+          440,
+          390
+        ],
+        [
+          550,
+          395
+        ]
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        290,
+        175,
+        580,
+        405
+      ],
+      "positive": [
+        [
+          425,
+          340
+        ],
+        [
+          460,
+          340
+        ]
+      ],
+      "negative": [
+        [
+          400,
+          420
+        ],
+        [
+          420,
+          150
+        ],
+        [
+          400,
+          390
+        ],
+        [
+          480,
+          385
+        ]
+      ]
+    }
+  },
+  "robot_state_guidance": true,
+  "refinement_passes": 1
+}

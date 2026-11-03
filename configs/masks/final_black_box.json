@@ -1,0 +1,29 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Black case on cardboard supports: retain case and moving lid; reject cardboard and robot. Specific to final_black_box calibrated 640x480 views.",
+  "robot_state_guidance": false,
+  "refinement_passes": 1,
+  "cameras": {
+    "cam_000": {
+      "image_size": [640, 480],
+      "box": [270, 145, 465, 400],
+      "crop": [255, 130, 480, 420],
+      "positive": [[340, 360], [410, 365]],
+      "negative": [[300, 420], [400, 430], [250, 300], [290, 205]]
+    },
+    "cam_001": {
+      "image_size": [640, 480],
+      "box": [325, 140, 480, 320],
+      "crop": [305, 125, 500, 360],
+      "positive": [[365, 280], [400, 290]],
+      "negative": [[370, 335], [450, 345], [490, 270]]
+    },
+    "cam_002": {
+      "image_size": [640, 480],
+      "box": [245, 120, 420, 325],
+      "crop": [225, 105, 445, 375],
+      "positive": [[285, 285], [350, 285]],
+      "negative": [[300, 345], [400, 350], [435, 240]]
+    }
+  }
+}

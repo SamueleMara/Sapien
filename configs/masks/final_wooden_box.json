@@ -1,0 +1,130 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Spatial mask correction for final_wooden_box; 640x480 fixed calibrated views. Separate from other recordings.",
+  "cameras": {
+    "cam_000": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        295,
+        150,
+        455,
+        430
+      ],
+      "positive": [
+        [
+          365,
+          380
+        ],
+        [
+          390,
+          390
+        ],
+        [
+          420,
+          340
+        ]
+      ],
+      "negative": [
+        [
+          370,
+          450
+        ],
+        [
+          210,
+          280
+        ],
+        [
+          270,
+          400
+        ]
+      ],
+      "crop": [
+        285,
+        140,
+        470,
+        440
+      ]
+    },
+    "cam_001": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        365,
+        155,
+        525,
+        310
+      ],
+      "positive": [
+        [
+          420,
+          280
+        ],
+        [
+          470,
+          280
+        ]
+      ],
+      "negative": [
+        [
+          430,
+          330
+        ],
+        [
+          550,
+          300
+        ]
+      ],
+      "crop": [
+        350,
+        145,
+        550,
+        335
+      ]
+    },
+    "cam_002": {
+      "image_size": [
+        640,
+        480
+      ],
+      "box": [
+        285,
+        140,
+        455,
+        315
+      ],
+      "positive": [
+        [
+          350,
+          280
+        ],
+        [
+          380,
+          280
+        ]
+      ],
+      "negative": [
+        [
+          350,
+          340
+        ],
+        [
+          520,
+          250
+        ]
+      ],
+      "crop": [
+        270,
+        130,
+        475,
+        335
+      ]
+    }
+  },
+  "robot_state_guidance": false,
+  "refinement_passes": 1
+}
