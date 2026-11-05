@@ -392,6 +392,9 @@ def main():
     for scene in scenes:
         try:
             apply_scene(scene, dry_run=args.dry_run, build_missing_endpoints=args.build_missing_endpoints)
+            if not args.dry_run:
+                from choose_rgbd_direction import finalize_scene
+                finalize_scene(scene)
         except Exception as exc:
             failures.append(str(scene))
             print(f'FAILED {scene}: {exc}', flush=True)

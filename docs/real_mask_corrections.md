@@ -34,18 +34,46 @@ lid. Validation used 117 sampled frames across all 13 scenes; it does not prove
 perfect masks or cover every intermediate frame. Tool-contact boundaries may
 still need adjustment.
 
+## Correct only orange suitcases
+
+The moving part in this recording is the telescopic handle. Use the profile
+that includes both silver rails and the black grip throughout retraction:
+
+```bash
+/home/samuelemara/miniconda3/envs/grounded-sam2/bin/python -B \
+  /home/samuelemara/Joint3DGS/Sapien/samuele/correct_real_masks.py \
+  --root "/media/samuelemara/Extreme SSD/Samuele/Backup_09_10_26/Sapien/output/real" \
+  --groups orange_suitcase \
+  --overwrite
+```
+
+This selects all twelve `final_orange_suitecase_episode_*` scenes. The source
+folder intentionally retains `suitecase`; the CLI group uses `orange_suitcase`.
+`configs/masks/final_orange_suitecase.json` widens the bounds to include the
+extended handle and adds foreground anchors at the rail attachments. It
+excludes the cardboard stand and uses per-camera robot background points in
+image coordinates. Robot-pose projection is disabled for this recording
+because the projections were inconsistent across episodes.
+
+Validation checked five times per camera across twelve episodes (180 sampled
+frames), including extended, partly retracted, and retracted handle states.
+All explicit point constraints passed; this is not a GT IoU measurement or an
+exhaustive check of every frame. Small robot-tool/contact boundary leaks can
+remain. The correction command writes masks and rebuilds both masked COLMAP
+endpoints and matching PLYs. It does not reconvert RGB-D.
+
 ## Correct all supported groups
 
 ```bash
 /home/samuelemara/miniconda3/envs/grounded-sam2/bin/python -B \
   /home/samuelemara/Joint3DGS/Sapien/samuele/correct_real_masks.py \
   --root "/media/samuelemara/Extreme SSD/Samuele/Backup_09_10_26/Sapien/output/real" \
-  --groups monitor matchbox laptop robot_dog wooden_box black_box \
+  --groups monitor matchbox laptop robot_dog wooden_box black_box orange_suitcase \
   --parquet-python /home/samuelemara/miniconda3/envs/yolo26/bin/python \
   --overwrite
 ```
 
-Currently selects 75 scenes. `--parquet-python` only decodes raw Parquet on CPU
+Currently selects 87 scenes. `--parquet-python` only decodes raw Parquet on CPU
 when optional robot guidance needs refreshing. SAM2 runs on CUDA in the
 `grounded-sam2` process. Its weights must already exist under
 `/home/samuelemara/Grounded-SAM-2-autodistill`, or pass `--model-root`.
@@ -95,3 +123,14 @@ cd /home/samuelemara/Joint3DGS/Sapien
 /home/samuelemara/miniconda3/envs/grounded-sam2/bin/python -B -m unittest discover -s tests -p 'test_sam2_point_guidance.py'
 /home/samuelemara/miniconda3/envs/grounded-sam2/bin/python -B -m unittest discover -s tests -p 'test_standard_masks.py'
 ```
+
+
+## Final direction check
+
+After both masked endpoint models and PLYs are rebuilt successfully, correction
+runs the CPU RGB-D direction check. Its recommendation and coverage diagnostics
+are saved under each scene's `metadata/direction/`. Matching reports are reused;
+changed mask/depth inputs trigger recounting. Incomplete camera/frame sets fail
+rather than generating a recommendation from a subset. See the
+[direction-selection guide](rgbd_direction.md) to run this step alone across all
+synthetic scenes and real `final_*` episodes.

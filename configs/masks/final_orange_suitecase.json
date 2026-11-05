@@ -1,0 +1,29 @@
+{
+  "coordinate_system": "image_pixels_xy",
+  "description": "Orange suitcase including the moving telescopic handle and rails; exclude cardboard supports and robot. Native recording name intentionally retains suitecase spelling.",
+  "robot_state_guidance": false,
+  "refinement_passes": 1,
+  "cameras": {
+    "cam_000": {
+      "image_size": [640, 480],
+      "box": [275, 60, 480, 350],
+      "crop": [0, 0, 640, 480],
+      "positive": [[400, 200], [340, 300], [450, 120]],
+      "negative": [[330, 370], [300, 400], [260, 200], [230, 240]]
+    },
+    "cam_001": {
+      "image_size": [640, 480],
+      "box": [185, 65, 600, 280],
+      "crop": [170, 50, 620, 325],
+      "positive": [[300, 170], [420, 210], [465, 162], [462, 228]],
+      "negative": [[320, 310], [610, 190], [580, 285], [540, 300], [540, 260], [570, 260]]
+    },
+    "cam_002": {
+      "image_size": [640, 480],
+      "box": [80, 45, 520, 300],
+      "crop": [60, 30, 545, 350],
+      "positive": [[250, 180], [360, 240], [405, 140], [402, 210]],
+      "negative": [[250, 330], [530, 250], [520, 180], [510, 175]]
+    }
+  }
+}

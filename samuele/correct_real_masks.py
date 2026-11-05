@@ -20,6 +20,7 @@ PROFILES = [
     ('wooden_box','final_wooden_box','wooden box'),
     ('black_box','final_black_box','black box'),
     ('black_box','black_box_20261021_161154','black box'),
+    ('orange_suitcase','final_orange_suitecase','orange suitcase'),
 ]
 
 
@@ -53,7 +54,7 @@ def plan(root, groups, profiles_root):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',type=Path,required=True,help='Existing standard real output root')
-    parser.add_argument('--groups',nargs='+',choices=['monitor','laptop','matchbox','robot_dog','wooden_box','black_box'],default=['monitor','laptop','matchbox','robot_dog','wooden_box','black_box'])
+    parser.add_argument('--groups',nargs='+',choices=['monitor','laptop','matchbox','robot_dog','wooden_box','black_box','orange_suitcase'],default=['monitor','laptop','matchbox','robot_dog','wooden_box','black_box','orange_suitcase'])
     parser.add_argument('--profiles-root',type=Path,default=Path(__file__).resolve().parents[1]/'configs/masks')
     parser.add_argument('--parquet-python',type=Path,default=Path(sys.executable),help='Python with polars for uncached robot poses; saved validated pose guidance is reused by default')
     modes=parser.add_mutually_exclusive_group(required=True)

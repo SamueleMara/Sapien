@@ -1468,6 +1468,9 @@ def main() -> int:
                         item["part_pointcloud_ply"] = str(
                             model_output / "pointcloud" / "points3D_parts.ply"
                         )
+                    if not args.export_colmap:
+                        run_command([sys.executable, str(repo_root / "scripts/choose_rgbd_direction.py"),
+                                     str(model_output), "--resume"], dry_run=False)
                     item["status"] = "ok"
                     print(f"[OK] {urdf.name} -> {model_output}")
 

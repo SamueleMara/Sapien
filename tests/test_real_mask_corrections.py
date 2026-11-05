@@ -72,6 +72,22 @@ class RealMaskCorrectionTests(unittest.TestCase):
             self.assertEqual({profile.stem for _,profile,_ in jobs},set(prefixes))
             self.assertEqual(len(jobs),2)
 
+    def test_suitcase_group_matches_native_spelling_and_checks_three_camera_profiles(self):
+        profiles=Path(__file__).resolve().parents[1]/'configs/masks'
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for prefix in ['final_orange_suitecase','final_black_box']:
+                scene=root/(prefix+'_episode_000000');(scene/'metadata/raw').mkdir(parents=True)
+                (scene/'metadata/real_conversion.json').write_text('{"episode":0}')
+                (scene/'metadata/raw/episode_000000.parquet').write_bytes(b'fixture')
+                for cam in ['cam_000','cam_001','cam_002']:
+                    rgb=scene/'rgb'/cam;rgb.mkdir(parents=True)
+                    Image.new('RGB',(640,480)).save(rgb/'frame_000000.png')
+            jobs=correction.plan(root,['orange_suitcase'],profiles)
+            self.assertEqual(len(jobs),1)
+            self.assertEqual(jobs[0][0].name,'final_orange_suitecase_episode_000000')
+            self.assertEqual(jobs[0][2],'orange suitcase')
+
     def test_shared_sam_backend_and_scene_failure_continuation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);jobs=[]

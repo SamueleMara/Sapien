@@ -1036,6 +1036,8 @@ def main() -> int:
                         f"images={final_stats.num_images}, points3D={final_stats.num_points3D}, "
                         f"colmap={final_stats.colmap_dir}, ply={final_stats.pointcloud_ply}"
                     )
+            from choose_rgbd_direction import finalize_scene
+            finalize_scene(model_output)
         except Exception as exc:  # noqa: BLE001
             failed += 1
             results.append(

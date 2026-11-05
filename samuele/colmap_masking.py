@@ -14,10 +14,15 @@ def apply_scene_masks(scene, fraction=None):
     import mask_colmap_models as shared
     if (Path(scene) / 'metadata/real_conversion.json').is_file():
         from dense_real_colmap import apply_scene
-        return apply_scene(scene, shared, fraction)
-    if fraction is not None:
-        raise ValueError('--point-fraction currently applies to metric real recordings only')
-    return shared.apply_scene(scene)
+        result = apply_scene(scene, shared, fraction)
+    else:
+        if fraction is not None:
+            raise ValueError('--point-fraction currently applies to metric real recordings only')
+        result = shared.apply_scene(scene)
+    if result:
+        from choose_rgbd_direction import finalize_scene
+        finalize_scene(scene)
+    return result
 
 
 if __name__ == '__main__':

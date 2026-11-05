@@ -394,6 +394,8 @@ The native conversion tools currently live in
 are also available in this repository under `samuele/`, with the reviewed
 profiles under `configs/masks/`. See [mask correction commands](docs/real_mask_corrections.md)
 for correcting existing real datasets without reconversion.
+The guide includes `--groups orange_suitcase` to retain the moving telescopic
+handle and rails in all twelve `final_orange_suitecase_episode_*` scenes.
 The required environments and local Grounded-SAM-2 weights must already be
 installed. Run the following steps manually in the same terminal.
 
@@ -1070,3 +1072,25 @@ On the host, run `bash scripts/mask_hoi_datasets.sh` to generate all masks using
 `grey fridge` for objects 001/002 and `white fridge` for 003/004, selecting the
 annotated appliance through Leica projection guidance. Add `--max-frames 1` for
 a first-frame-per-view trial. The runner uses grounded-sam2 on CUDA.
+
+
+## Final preparation step: choose the RGB-D direction
+
+Successful synthetic export and real mask/COLMAP preparation now finish with
+`scripts/choose_rgbd_direction.py`. It compares masked valid-depth coverage at
+the two ends of the sequence and saves a forward/backward recommendation.
+To process all existing synthetic scenes and all real `final_*` episodes:
+
+```bash
+/home/samuelemara/miniconda3/envs/grounded-sam2/bin/python -B \
+  /home/samuelemara/Joint3DGS/Sapien/scripts/choose_rgbd_direction.py \
+  --root "/media/samuelemara/Extreme SSD/Samuele/Backup_09_10_26/Sapien/output" \
+  --subset synthetic real-final --resume
+```
+
+Results stay in each scene's `metadata/direction/`: `summary.json`,
+`per_frame.csv`, and `coverage.png`. This CPU-only command does not regenerate
+masks, geometry, or renders. Add `--dry-run` to check layouts without writes.
+The recommendation does not reorder frames or launch training. See
+[direction selection and commands](docs/rgbd_direction.md) for the heuristic,
+strict camera/frame checks, resume behavior, and separate dataset selections.
